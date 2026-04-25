@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Unit tests for the top-level ESamp starter example."""
+
+from __future__ import annotations
+
+import importlib
+import sys
+import unittest
+from unittest import mock
+
+
+class StarterUnitTest(unittest.TestCase):
+    def _load_starter(self):
+        sys.modules.pop("starter", None)
+        return importlib.import_module("starter")
+
+    def test_defaults_target_qwen3_and_sixteen_parallel_answers(self) -> None:
+        starter = self._load_starter()
+
+        args = starter._parse_args([])
+
+        self.assertEqual(args.model_name, "Qwen/Qwen3-1.7B")
+        self.assertEqual(args.num_answers, 16)
+        self.assertTrue(args.enable_distiller_intervention)
+        self.assertEqual(args.distiller_sampler_backend, "post_filter_exact")
+
+    def test_parallel_requests_expand_one_prompt_to_sixteen_samples(self) -> None:
+        starter = self._load_starter()
+        args = starter._parse_args(["--prompt", "Explain tLLM.", "--num-answers", "16", "--seed", "123"])
+
+        prompts, params, prompt_indices, sample_indices = starter._build_parallel_requests(args)
+
+        self.assertEqual(prompts, ["Explain tLLM."] * 16)
+        self.assertEqual(prompt_indices, [0] * 16)
+        self.assertEqual(sample_indices, list(range(16)))
+        self.assertEqual(len(params), 16)
+        self.assertTrue(all(getattr(p, "n") == 1 for p in params))
+        self.assertEqual([getattr(p, "seed") for p in params[:3]], [123, 124, 125])
+
+    def test_configure_starter_runtime_uses_esamp_model_bank_and_distiller(self) -> None:
+        starter = self._load_starter()
+        args = starter._parse_args(["--num-answers", "16", "--distiller-beta", "0.25"])
+
+        with mock.patch.object(starter.side_train_support, "configure_esamp_runtime") as configure:
+            starter._configure_esamp(args)
+
+        kwargs = configure.call_args.kwargs
+        self.assertTrue(kwargs["enable_side_train"])
+        self.assertTrue(kwargs["per_request_model_bank"])
+        self.assertEqual(kwargs["model_bank_slots"], 16)
+        self.assertTrue(kwargs["enable_distiller_intervention"])
+        self.assertEqual(kwargs["distiller_beta"], 0.25)
+
+
+if __name__ == "__main__":
+    unittest.main()
