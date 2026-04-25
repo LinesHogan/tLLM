@@ -8,8 +8,8 @@ from unittest import mock
 
 from tllm.consumers.esamp import ESampConsumerConfig
 from tllm.runtime import residual_runtime
-from tllm.workflows import side_train_support
-from tllm.workflows.benchmarks import per_request_side_train_benchmark as bench
+from tllm.workflows import esamp_support
+from tllm.workflows.benchmarks import per_request_esamp_benchmark as bench
 
 
 class ESampDistillerConfigUnitTest(unittest.TestCase):
@@ -30,9 +30,9 @@ class ESampDistillerConfigUnitTest(unittest.TestCase):
             tap_layer_paths=["a", "b"],
             source_layer_path="a",
             target_layer_path="b",
-            enable_side_train=True,
-            side_hidden_dim=8,
-            side_lr=1e-3,
+            enable_esamp_training=True,
+            distiller_hidden_dim=8,
+            distiller_lr=1e-3,
             enable_distiller_intervention=True,
             distiller_beta=0.6,
             distiller_sampler_backend="post_filter_exact",
@@ -49,22 +49,22 @@ class ESampDistillerConfigUnitTest(unittest.TestCase):
             def __init__(self, config):
                 captured["config"] = config
 
-        with mock.patch.object(side_train_support.runtime.RUNTIME, "consumer", None), mock.patch(
-            "tllm.workflows.side_train_support.ESampConsumer",
+        with mock.patch.object(esamp_support.runtime.RUNTIME, "consumer", None), mock.patch(
+            "tllm.workflows.esamp_support.ESampConsumer",
             _FakeConsumer,
-        ), mock.patch.object(side_train_support.runtime, "clear_dispatch_consumers"), mock.patch.object(
-            side_train_support.runtime, "set_runtime_consumer"
+        ), mock.patch.object(esamp_support.runtime, "clear_dispatch_consumers"), mock.patch.object(
+            esamp_support.runtime, "set_runtime_consumer"
         ), mock.patch.object(
-            side_train_support.runtime, "configure_runtime"
+            esamp_support.runtime, "configure_runtime"
         ):
-            side_train_support.configure_esamp_runtime(
+            esamp_support.configure_esamp_runtime(
                 graph_scratch_rows=16,
                 tap_layer_paths=["a", "b"],
                 source_layer_path="a",
                 target_layer_path="b",
-                enable_side_train=True,
-                side_hidden_dim=8,
-                side_lr=1e-3,
+                enable_esamp_training=True,
+                distiller_hidden_dim=8,
+                distiller_lr=1e-3,
                 enable_distiller_intervention=True,
                 distiller_beta=0.9,
                 distiller_sampler_backend="post_filter_exact",
@@ -79,7 +79,7 @@ class ESampDistillerConfigUnitTest(unittest.TestCase):
         with mock.patch(
             "sys.argv",
             [
-                "per_request_side_train_benchmark",
+                "per_request_esamp_benchmark",
                 "--enable-distiller-intervention",
                 "--distiller-beta",
                 "0.4",
@@ -97,7 +97,7 @@ class ESampDistillerConfigUnitTest(unittest.TestCase):
         with mock.patch(
             "sys.argv",
             [
-                "per_request_side_train_benchmark",
+                "per_request_esamp_benchmark",
                 "--distiller-sampler-backend",
                 "post_filter_dense_cache",
             ],
@@ -109,13 +109,9 @@ class ESampDistillerConfigUnitTest(unittest.TestCase):
     def test_config_normalizes_new_backend_aliases_to_internal_canonical_names(self) -> None:
         exact = ESampConsumerConfig(distiller_sampler_backend="post_filter_exact_minp")
         reference = ESampConsumerConfig(distiller_sampler_backend="post_filter_exact_torch")
-        dense_cache = ESampConsumerConfig(distiller_sampler_backend="legacy_post_filter_dense_cache")
-        fixed_topk = ESampConsumerConfig(distiller_sampler_backend="legacy_fixed_topk_minp")
 
         self.assertEqual(exact.distiller_sampler_backend, "post_filter_exact")
         self.assertEqual(reference.distiller_sampler_backend, "post_filter_exact")
-        self.assertEqual(dense_cache.distiller_sampler_backend, "post_filter_dense_cache")
-        self.assertEqual(fixed_topk.distiller_sampler_backend, "post_filter_exact")
 
     def test_model_bank_forward_backend_config_is_normalized(self) -> None:
         cfg = ESampConsumerConfig(model_bank_forward_backend="triton")
@@ -128,9 +124,9 @@ class ESampDistillerConfigUnitTest(unittest.TestCase):
             tap_layer_paths=["a", "b"],
             source_layer_path="a",
             target_layer_path="b",
-            enable_side_train=True,
-            side_hidden_dim=8,
-            side_lr=1e-3,
+            enable_esamp_training=True,
+            distiller_hidden_dim=8,
+            distiller_lr=1e-3,
             model_bank_forward_backend="triton",
         )
 
@@ -140,7 +136,7 @@ class ESampDistillerConfigUnitTest(unittest.TestCase):
         with mock.patch(
             "sys.argv",
             [
-                "per_request_side_train_benchmark",
+                "per_request_esamp_benchmark",
                 "--model-bank-forward-backend",
                 "triton_grouped",
             ],
@@ -153,13 +149,11 @@ class ESampDistillerConfigUnitTest(unittest.TestCase):
         for backend in [
             "post_filter_exact_minp",
             "post_filter_exact_torch",
-            "legacy_post_filter_dense_cache",
-            "legacy_fixed_topk_minp",
         ]:
             with self.subTest(backend=backend), mock.patch(
                 "sys.argv",
                 [
-                    "per_request_side_train_benchmark",
+                    "per_request_esamp_benchmark",
                     "--distiller-sampler-backend",
                     backend,
                 ],

@@ -9,7 +9,7 @@ import unittest
 
 from tllm.contracts.runtime_context import RuntimeContext
 from tllm.consumers.esamp.consumer import ESampConsumer
-from tllm.runtime import legacy_consumer_compat
+from tllm.runtime import consumer_compat
 from tllm.runtime import residual_runtime as esamp_runtime
 from tllm.runtime.ports.provider_registry import ProviderRegistry
 from tllm.runtime.vllm_patch import port_runtime_hooks
@@ -28,12 +28,12 @@ class RuntimeTypingContractsUnitTest(unittest.TestCase):
 
         self.assertIsNot(hints["runner"], typing.Any)
 
-    def test_legacy_consumer_compat_does_not_expose_any_consumer_parameters(self) -> None:
+    def test_consumer_compat_does_not_expose_any_consumer_parameters(self) -> None:
         for fn in (
-            legacy_consumer_compat.legacy_subscriptions,
-            legacy_consumer_compat.apply_feedback,
-            legacy_consumer_compat.dispatch_legacy_event,
-            legacy_consumer_compat.synchronize,
+            consumer_compat.consumer_subscriptions,
+            consumer_compat.apply_feedback,
+            consumer_compat.dispatch_consumer_event,
+            consumer_compat.synchronize,
         ):
             hints = typing.get_type_hints(fn)
             for name, hint in hints.items():

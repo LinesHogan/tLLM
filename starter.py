@@ -10,7 +10,7 @@ from vllm import SamplingParams
 
 from tllm.runtime import residual_runtime as runtime
 from tllm.util.tools import make_llm, shutdown_llm_instance
-from tllm.workflows import side_train_support
+from tllm.workflows import esamp_support
 
 
 DEFAULT_MODEL_NAME = "Qwen/Qwen3-1.7B"
@@ -34,8 +34,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--source-layer-path", type=str, default="model.model.layers[0].input_layernorm")
     parser.add_argument("--target-layer-path", type=str, default="model.model.layers[-1].input_layernorm")
     parser.add_argument("--graph-scratch-rows", type=int, default=0)
-    parser.add_argument("--side-hidden-dim", type=int, default=128)
-    parser.add_argument("--side-lr", type=float, default=1e-3)
+    parser.add_argument("--distiller-hidden-dim", type=int, default=128)
+    parser.add_argument("--distiller-lr", type=float, default=1e-3)
     parser.add_argument("--model-bank-slots", type=int, default=0)
     parser.add_argument("--model-bank-rank", type=int, default=64)
     parser.add_argument("--model-bank-flush-interval", type=int, default=1)
@@ -70,14 +70,14 @@ def _configure_esamp(args: argparse.Namespace):
     rows = int(args.graph_scratch_rows) if int(args.graph_scratch_rows) > 0 else max(64, int(args.num_answers))
     slots = int(args.model_bank_slots) if int(args.model_bank_slots) > 0 else int(args.num_answers)
     tap_layer_paths = [str(args.source_layer_path), str(args.target_layer_path)]
-    return side_train_support.configure_esamp_runtime(
+    return esamp_support.configure_esamp_runtime(
         graph_scratch_rows=rows,
         tap_layer_paths=tap_layer_paths,
         source_layer_path=str(args.source_layer_path),
         target_layer_path=str(args.target_layer_path),
-        enable_side_train=True,
-        side_hidden_dim=int(args.side_hidden_dim),
-        side_lr=float(args.side_lr),
+        enable_esamp_training=True,
+        distiller_hidden_dim=int(args.distiller_hidden_dim),
+        distiller_lr=float(args.distiller_lr),
         per_request_models=False,
         per_request_model_bank=True,
         model_bank_slots=slots,
@@ -106,15 +106,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     try:
-        outputs = side_train_support.run_generate_with_request_mapping(
+        outputs = esamp_support.run_generate_with_request_mapping(
             llm,
             prompts,
             params,
             request_prompt_indices=prompt_indices,
             request_sample_indices=sample_indices,
         )
-        runtime.synchronize_side_train()
-        stats = runtime.read_and_reset_side_train_stats(sync=True)
+        runtime.synchronize_esamp()
+        stats = runtime.read_and_reset_esamp_stats(sync=True)
 
         for i, out in enumerate(outputs):
             choices = getattr(out, "outputs", None) or []

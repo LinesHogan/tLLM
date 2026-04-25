@@ -12,7 +12,7 @@ from tllm.ports.base import ConsumerFlow
 from tllm.ports.residual_stream import ResidualLocator
 from tllm.runtime.dispatch_plan import DispatchPlan
 from tllm.runtime import active_targets
-from tllm.runtime import legacy_event_bridge as _legacy_bridge
+from tllm.runtime import hidden_event_bridge as _hidden_bridge
 from tllm.runtime.ports import residual_bundle_dispatch as _residual_bundle_dispatch
 from tllm.runtime.ports.residual_bindings import ResidualPathBinding
 from tllm.runtime.ports import residual_bindings as _residual_bindings
@@ -22,7 +22,7 @@ from tllm.runtime.vllm_patch.adapters import (
     get_prepare_inputs_adapter,
 )
 from tllm.runtime.vllm_patch import sampler_patch as _sampler_patch
-from tllm.runtime.legacy_consumer_compat import apply_feedback as apply_consumer_feedback
+from tllm.runtime.consumer_compat import apply_feedback as apply_consumer_feedback
 from tllm.runtime.vllm_patch import common_hooks as _common_hooks
 
 RUNTIME_EVENT_POINTS = (
@@ -500,7 +500,7 @@ def wrapped_execute_model(*, core: Any, runner: Any, args: tuple, kwargs: dict) 
         maybe_launch_post_logits_decode_work(core=core, runner=runner)
     dispatch_decode_port_bundles(core=core, runner=runner)
     if not core.RUNTIME.launch_consumer_from_hooks:
-        _legacy_bridge.dispatch_deferred_layer_batches(core=core, runner=runner)
+        _hidden_bridge.dispatch_deferred_layer_batches(core=core, runner=runner)
     _common_hooks.dispatch_runtime_event(
         runtime=core.RUNTIME,
         runner=runner,

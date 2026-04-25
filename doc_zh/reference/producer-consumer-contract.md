@@ -111,7 +111,7 @@
  ```
 
  过滤方式:
- - `--project unit|decode|prefill|throughput|side_train`：按项目类型过滤
+ - `--project unit|decode|prefill|throughput|esamp`：按项目类型过滤
  - `--scenario <scenario_id>`：跑指定场景
 
  捕获层配置（所有 runner 通用）:

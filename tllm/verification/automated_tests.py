@@ -33,7 +33,7 @@ def _parse_args() -> argparse.Namespace:
         "--project",
         action="append",
         default=[],
-        help="Run specific project(s): unit/decode/prefill/throughput/side_train.",
+        help="Run specific project(s): unit/decode/prefill/throughput/esamp.",
     )
     parser.add_argument(
         "--scenario",
@@ -110,17 +110,17 @@ def _parse_args() -> argparse.Namespace:
     parser.set_defaults(throughput_disable_prefix_caching=True)
 
     parser.add_argument(
-        "--side-train-model",
+        "--esamp-model",
         type=str,
         default="Qwen/Qwen2.5-0.5B-Instruct",
     )
-    parser.add_argument("--side-train-gpu-memory-utilization", type=float, default=0.5)
-    parser.add_argument("--side-train-batch-size", type=int, default=64)
-    parser.add_argument("--side-train-max-new-tokens", type=int, default=128)
-    parser.add_argument("--side-train-warmup-rounds", type=int, default=1)
-    parser.add_argument("--side-train-rounds", type=int, default=3)
-    parser.add_argument("--side-train-hidden-dim", type=int, default=256)
-    parser.add_argument("--side-train-lr", type=float, default=1e-3)
+    parser.add_argument("--esamp-gpu-memory-utilization", type=float, default=0.5)
+    parser.add_argument("--esamp-batch-size", type=int, default=64)
+    parser.add_argument("--esamp-max-new-tokens", type=int, default=128)
+    parser.add_argument("--esamp-warmup-rounds", type=int, default=1)
+    parser.add_argument("--esamp-rounds", type=int, default=3)
+    parser.add_argument("--esamp-hidden-dim", type=int, default=256)
+    parser.add_argument("--esamp-lr", type=float, default=1e-3)
     return parser.parse_args()
 
 
@@ -189,41 +189,41 @@ def _build_scenarios(args: argparse.Namespace) -> List[Scenario]:
     else:
         throughput_common.append("--no-benchmark-disable-prefix-caching")
 
-    side_train_common = [
+    esamp_common = [
         "--prompt-file",
         args.prompt_file,
         "--dtype",
         args.dtype,
         "--enforce-eager",
         "--gpu-memory-utilization",
-        str(args.side_train_gpu_memory_utilization),
+        str(args.esamp_gpu_memory_utilization),
         "--max-model-len",
         str(args.max_model_len),
         "--benchmark-batch-size",
-        str(args.side_train_batch_size),
+        str(args.esamp_batch_size),
         "--benchmark-max-new-tokens",
-        str(args.side_train_max_new_tokens),
+        str(args.esamp_max_new_tokens),
         "--benchmark-warmup-rounds",
-        str(args.side_train_warmup_rounds),
+        str(args.esamp_warmup_rounds),
         "--benchmark-rounds",
-        str(args.side_train_rounds),
-        "--side-hidden-dim",
-        str(args.side_train_hidden_dim),
-        "--side-lr",
-        str(args.side_train_lr),
+        str(args.esamp_rounds),
+        "--distiller-hidden-dim",
+        str(args.esamp_hidden_dim),
+        "--distiller-lr",
+        str(args.esamp_lr),
         "--source-layer-path",
         "model.model.layers[0].input_layernorm",
         "--target-layer-path",
         "model.model.layers[-1].input_layernorm",
     ]
     if args.throughput_ignore_eos:
-        side_train_common.append("--benchmark-ignore-eos")
+        esamp_common.append("--benchmark-ignore-eos")
     else:
-        side_train_common.append("--no-benchmark-ignore-eos")
+        esamp_common.append("--no-benchmark-ignore-eos")
     if args.throughput_disable_prefix_caching:
-        side_train_common.append("--benchmark-disable-prefix-caching")
+        esamp_common.append("--benchmark-disable-prefix-caching")
     else:
-        side_train_common.append("--no-benchmark-disable-prefix-caching")
+        esamp_common.append("--no-benchmark-disable-prefix-caching")
 
     return [
         Scenario(
@@ -292,28 +292,28 @@ def _build_scenarios(args: argparse.Namespace) -> List[Scenario]:
             ],
         ),
         Scenario(
-            scenario_id="side_train_layer0_to_last_qwen2p5_0p5b",
-            project="side_train",
+            scenario_id="esamp_layer0_to_last_qwen2p5_0p5b",
+            project="esamp",
             description="Delayed side-train benchmark: layer[0] -> layer[-1] on Qwen2.5-0.5B.",
             command=[
                 py,
                 "-m",
-                "tllm.workflows.benchmarks.side_train_benchmark",
+                "tllm.workflows.benchmarks.esamp_benchmark",
                 "--model-name",
-                args.side_train_model,
-                *side_train_common,
+                args.esamp_model,
+                *esamp_common,
             ],
         ),
         Scenario(
             scenario_id="esamp_loss_parity_qwen2p5_0p5b",
-            project="side_train",
+            project="esamp",
             description="Single-path ESamp aligned verification with historical parity record on Qwen2.5-0.5B.",
             command=[
                 py,
                 "-m",
                 "tllm.workflows.repro.repro_esamp_loss_parity",
                 "--model-name",
-                args.side_train_model,
+                args.esamp_model,
                 "--prompt-file",
                 args.prompt_file,
                 "--dtype",
@@ -342,10 +342,10 @@ def _build_scenarios(args: argparse.Namespace) -> List[Scenario]:
                 "-1",
                 "--sampling-seed",
                 "1234",
-                "--side-hidden-dim",
-                str(args.side_train_hidden_dim),
-                "--side-lr",
-                str(args.side_train_lr),
+                "--distiller-hidden-dim",
+                str(args.esamp_hidden_dim),
+                "--distiller-lr",
+                str(args.esamp_lr),
                 "--source-layer-path",
                 "model.model.layers[0].input_layernorm",
                 "--target-layer-path",

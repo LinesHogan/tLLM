@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runtime-internal compatibility helpers for pre-port consumers."""
+"""Runtime-internal compatibility helpers for event-style consumers."""
 
 from __future__ import annotations
 
@@ -10,17 +10,17 @@ from tllm.contracts.runtime_context import RuntimeContext
 from tllm.contracts.subscription import ConsumerSubscription
 
 
-class SupportsLegacySubscriptions(Protocol):
+class SupportsSubscriptions(Protocol):
     def subscriptions(self) -> Sequence[ConsumerSubscription]:
         ...
 
 
-class SupportsLegacyConsume(Protocol):
+class SupportsConsume(Protocol):
     def consume(self, batch: HiddenBatch, ctx: RuntimeContext) -> None:
         ...
 
 
-class SupportsLegacyTick(Protocol):
+class SupportsTick(Protocol):
     def on_tick(self, event_name: str, ctx: RuntimeContext) -> None:
         ...
 
@@ -35,7 +35,7 @@ class SupportsSynchronize(Protocol):
         ...
 
 
-def legacy_subscriptions(consumer: SupportsLegacySubscriptions | object) -> Sequence[ConsumerSubscription]:
+def consumer_subscriptions(consumer: SupportsSubscriptions | object) -> Sequence[ConsumerSubscription]:
     fn = getattr(consumer, "subscriptions", None)
     if not callable(fn):
         return ()
@@ -49,7 +49,7 @@ def apply_feedback(consumer: SupportsFeedback | object, ctx: RuntimeContext) -> 
         fn(ctx)
 
 
-def dispatch_legacy_event(
+def dispatch_consumer_event(
     *,
     consumer: object,
     payload: HiddenBatch | None,

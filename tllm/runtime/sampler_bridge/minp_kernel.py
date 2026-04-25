@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import torch
 
-from tllm.runtime.sampler_bridge.legacy.dense_cache import gather_dense_candidate_logits
+from tllm.runtime.sampler_bridge.backends.dense_cache import gather_dense_candidate_logits
 from tllm.runtime.sampler_bridge.min_p import min_p_keep_mask
 from tllm.runtime.sampler_bridge.truth import project_candidate_logits
 from tllm.runtime.sampler_bridge.types import CandidateModifierState, CandidateSampleResult

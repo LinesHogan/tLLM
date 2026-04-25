@@ -14,14 +14,14 @@ from tllm.common.state import ensure_v1_env, pick_common_attn_metadata, resolve_
 from tllm.consumers.base import BaseConsumer
 from tllm.consumers.esamp.initializers.svd import SVDModelBankInitializerConfig
 from tllm.consumers.esamp.model_bank_backend import ModelBankForwardBackendName, normalize_model_bank_forward_backend
-from tllm.consumers.esamp.engine import SideTrainStats
+from tllm.consumers.esamp.engine import ESampStats
 from tllm.contracts.runtime_context import RunnerLike
 from tllm.ports.residual_stream import ResidualLocator
 from tllm.producer.decode import compute_decode_localization
 from tllm.runtime.sampler_bridge.types import SamplerBackend, normalize_sampler_backend
 from tllm.runtime.consumer_registry import ConsumerRegistry
 from tllm.runtime.dispatch_plan import DispatchPlan
-from tllm.runtime.legacy_consumer_compat import synchronize as synchronize_consumer
+from tllm.runtime.consumer_compat import synchronize as synchronize_consumer
 from tllm.runtime.ports.residual_bindings import (
     ResidualPathBinding,
     default_raw_paths_from_config,
@@ -36,8 +36,8 @@ _ORIG_PREPARE_INPUTS = None
 _ORIG_EXECUTE_MODEL = None
 _PATCH_INSTALLED = False
 
-MODEL_HOOK_FLAG = "side_train_hook_installed"
-MODEL_HOOK_SPEC_ATTR = "side_train_hook_spec"
+MODEL_HOOK_FLAG = "esamp_hook_installed"
+MODEL_HOOK_SPEC_ATTR = "esamp_hook_spec"
 
 RuntimeConsumer = BaseConsumer
 
@@ -95,9 +95,9 @@ class ResidualRuntimeConfig:
     tap_layer_paths: list[str] = field(default_factory=list)
     source_layer_path: str = "model.model.layers[0].input_layernorm"
     target_layer_path: str = "model.model.layers[-1].input_layernorm"
-    enable_side_train: bool = True
-    side_hidden_dim: int = 128
-    side_lr: float = 1e-3
+    enable_esamp_training: bool = True
+    distiller_hidden_dim: int = 128
+    distiller_lr: float = 1e-3
     per_request_models: bool = False
     per_request_model_bank: bool = False
     model_bank_slots: int = 0
@@ -360,9 +360,9 @@ def configure_runtime(
     tap_layer_paths: Sequence[str],
     source_layer_path: str,
     target_layer_path: str,
-    enable_side_train: bool,
-    side_hidden_dim: int,
-    side_lr: float,
+    enable_esamp_training: bool,
+    distiller_hidden_dim: int,
+    distiller_lr: float,
     per_request_models: bool = False,
     per_request_model_bank: bool = False,
     model_bank_slots: int = 0,
@@ -384,9 +384,9 @@ def configure_runtime(
     cfg.tap_layer_paths = [str(path).strip() for path in tap_layer_paths if str(path).strip()]
     cfg.source_layer_path = str(source_layer_path).strip()
     cfg.target_layer_path = str(target_layer_path).strip()
-    cfg.enable_side_train = bool(enable_side_train)
-    cfg.side_hidden_dim = max(1, int(side_hidden_dim))
-    cfg.side_lr = float(side_lr)
+    cfg.enable_esamp_training = bool(enable_esamp_training)
+    cfg.distiller_hidden_dim = max(1, int(distiller_hidden_dim))
+    cfg.distiller_lr = float(distiller_lr)
     cfg.per_request_models = bool(per_request_models)
     cfg.per_request_model_bank = bool(per_request_model_bank)
     cfg.model_bank_slots = max(0, int(model_bank_slots))
@@ -421,13 +421,13 @@ def configure_runtime(
     RUNTIME.reset_step()
 
 
-def set_side_train_enabled(enabled: bool) -> None:
-    RUNTIME.config.enable_side_train = bool(enabled)
+def set_esamp_training_enabled(enabled: bool) -> None:
+    RUNTIME.config.enable_esamp_training = bool(enabled)
     if RUNTIME.consumer is not None:
         RUNTIME.consumer.set_enabled(enabled)
 
 
-def synchronize_side_train() -> None:
+def synchronize_esamp() -> None:
     if RUNTIME.consumer is not None:
         synchronize_consumer(RUNTIME.consumer)
     registry = RUNTIME.consumer_registry
@@ -437,13 +437,13 @@ def synchronize_side_train() -> None:
         synchronize_consumer(consumer)
 
 
-def read_and_reset_side_train_stats(sync: bool = True) -> SideTrainStats:
+def read_and_reset_esamp_stats(sync: bool = True) -> ESampStats:
     if RUNTIME.consumer is None:
-        return SideTrainStats(loss_avg=0.0, loss_count=0)
+        return ESampStats(loss_avg=0.0, loss_count=0)
     return RUNTIME.consumer.read_and_reset_stats(sync=sync)
 
 
-def read_and_reset_side_train_per_request_stats(sync: bool = True) -> Dict[int, SideTrainStats]:
+def read_and_reset_esamp_per_request_stats(sync: bool = True) -> Dict[int, ESampStats]:
     if RUNTIME.consumer is None:
         return {}
     return RUNTIME.consumer.read_and_reset_per_request_stats(sync=sync)
@@ -571,13 +571,13 @@ __all__ = [
     "pick_common_attn_metadata",
     "read_and_reset_distiller_timing_stats",
     "read_graph_debug_stats",
-    "read_and_reset_side_train_per_request_stats",
-    "read_and_reset_side_train_stats",
+    "read_and_reset_esamp_per_request_stats",
+    "read_and_reset_esamp_stats",
     "register_dispatch_consumer",
     "replace_dispatch_consumers",
     "resolve_module_by_path_with_fallback",
     "runner_uses_compilation_or_cudagraph",
     "set_runtime_consumer",
-    "set_side_train_enabled",
-    "synchronize_side_train",
+    "set_esamp_training_enabled",
+    "synchronize_esamp",
 ]

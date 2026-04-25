@@ -17,7 +17,7 @@
 在测吞吐之前，必须先确认 side-train 路径真的在工作。如果 loss 根本不出现，benchmark 的结果没有意义。
 
 ```bash
-python -m tllm.workflows.repro.repro_side_train_loss \
+python -m tllm.workflows.repro.repro_esamp_loss \
   --model-name Qwen/Qwen2.5-0.5B-Instruct \
   --prompt-file test/prompt_debug_list.txt \
   --source-layer-path model.model.layers[0] \
@@ -46,7 +46,7 @@ python -m tllm.workflows.repro.repro_side_train_loss \
 
 ```bash
 VLLM_USE_FLASHINFER_SAMPLER=1 \
-python -m tllm.workflows.benchmarks.per_request_side_train_benchmark \
+python -m tllm.workflows.benchmarks.per_request_esamp_benchmark \
   --emit-json-summary \
   --model-name Qwen/Qwen2.5-0.5B-Instruct \
   --dtype bfloat16 \
@@ -62,7 +62,7 @@ python -m tllm.workflows.benchmarks.per_request_side_train_benchmark \
   --sampling-temperature 0.8 \
   --sampling-top-p 0.95 \
   --sampling-top-k -1 \
-  --side-lr 1e-3 \
+  --distiller-lr 1e-3 \
   --model-bank-flush-interval 1 \
   --model-bank-init-method ffn_fast_svd \
   --trajectory-topk 1 \
@@ -155,8 +155,8 @@ new_logit = (1 + beta) * llm_logit - beta * distiller_logit
 |------|------|-------------|--------------|
 | `--source-layer-path` | distiller 读取输入 hidden 的层 | `model.model.layers[0]` | 如果你想用更深层的信息，或模型结构不同 |
 | `--target-layer-path` | distiller 读取目标 hidden 的层 | `model.model.layers[-1]` | 如果你想让 distiller 预测中间层而不是最后一层 |
-| `--side-hidden-dim` | side model 的隐藏层维度 | `256` | 模型大或任务复杂时增大；想减少计算时减小 |
-| `--side-lr` | side model 的学习率 | `1e-3` | loss 不收敛时调小；收敛太慢时调大 |
+| `--distiller-hidden-dim` | side model 的隐藏层维度 | `256` | 模型大或任务复杂时增大；想减少计算时减小 |
+| `--distiller-lr` | side model 的学习率 | `1e-3` | loss 不收敛时调小；收敛太慢时调大 |
 | `--model-bank-rank` | model-bank 低秩分解的 rank | `64` | 模型大时增大；想减少参数量和计算时减小 |
 | `--model-bank-flush-interval` | 多久执行一次 optimizer step | `1` | 吞吐敏感时增大（但 loss 可能变差）；loss 敏感时保持 1 |
 | `--model-bank-init-method` | side model 的初始化方式 | `ffn_fast_svd` | 不同模型结构可能需要换别的初始化 |

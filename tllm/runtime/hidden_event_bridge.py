@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Internal bridge for legacy event-style HiddenBatch dispatch."""
+"""Internal bridge for HiddenBatch event dispatch."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from tllm.runtime.ports import residual_bindings as _residual_bindings
 from tllm.runtime.vllm_patch import common_hooks as _common_hooks
 
 
-class SideTrainRuntimeLike(Protocol):
+class ResidualRuntimeLike(Protocol):
     tap_decode_hidden: dict[str, torch.Tensor]
     decode_row_idx: torch.Tensor | None
     decode_valid_mask: torch.Tensor | None
@@ -26,11 +26,11 @@ class SideTrainRuntimeLike(Protocol):
     event_step_id: int
 
 
-class LegacyEventCoreLike(Protocol):
-    RUNTIME: SideTrainRuntimeLike
+class EventCoreLike(Protocol):
+    RUNTIME: ResidualRuntimeLike
 
 
-def build_runtime_hidden_batch(*, core: LegacyEventCoreLike, layer_path: str) -> HiddenBatch | None:
+def build_runtime_hidden_batch(*, core: EventCoreLike, layer_path: str) -> HiddenBatch | None:
     decode_buf = core.RUNTIME.tap_decode_hidden.get(layer_path)
     decode_row_idx = core.RUNTIME.decode_row_idx
     decode_valid_mask = core.RUNTIME.decode_valid_mask
@@ -64,7 +64,7 @@ def build_runtime_hidden_batch(*, core: LegacyEventCoreLike, layer_path: str) ->
     )
 
 
-def dispatch_deferred_layer_batches(*, core: LegacyEventCoreLike, runner: RunnerLike) -> int:
+def dispatch_deferred_layer_batches(*, core: EventCoreLike, runner: RunnerLike) -> int:
     dispatched = 0
     seen: set[str] = set()
     source_path, target_path = _residual_bindings.default_resolved_paths(core.RUNTIME)
@@ -90,7 +90,7 @@ def dispatch_deferred_layer_batches(*, core: LegacyEventCoreLike, runner: Runner
 
 def dispatch_layer_lifecycle_events(
     *,
-    core: LegacyEventCoreLike,
+    core: EventCoreLike,
     runner: RunnerLike,
     layer_path: str,
     capture_enabled: bool,

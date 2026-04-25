@@ -49,7 +49,7 @@ Common cases:
 
 - Model load OOM: reduce `--gpu-memory-utilization`.
 - High `sampling_n`: increase `--max-model-len` or lower `n`.
-- Side-training OOM: lower `--side-hidden-dim` or `--model-bank-rank`.
+- Side-training OOM: lower `--distiller-hidden-dim` or `--model-bank-rank`.
 
 ### CUDA Graph capture errors?
 

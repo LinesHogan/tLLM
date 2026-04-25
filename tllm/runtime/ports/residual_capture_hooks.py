@@ -9,7 +9,7 @@ import torch
 
 from tllm.contracts.runtime_context import RunnerLike
 from tllm.runtime import active_targets
-from tllm.runtime import legacy_event_bridge as _legacy_bridge
+from tllm.runtime import hidden_event_bridge as _hidden_bridge
 from tllm.runtime.vllm_patch import sampler_patch as _sampler_patch
 
 
@@ -65,7 +65,7 @@ def install_layer_forward_taps(
                 layer_path=__path,
             )
 
-            _legacy_bridge.dispatch_layer_lifecycle_events(
+            _hidden_bridge.dispatch_layer_lifecycle_events(
                 core=core,
                 runner=runner,
                 layer_path=__path,

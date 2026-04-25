@@ -68,7 +68,7 @@ Consumer implementations.
 ESamp key files:
 
 - `consumer.py`: `ESampConsumer`, the framework-facing wrapper.
-- `engine.py`: training engine and model-bank scheduling.
+- `engine.py`: `ESampTrainEngine`, training state, and model-bank scheduling.
 - `model.py`: side-training model definitions.
 - `template.py`: model-bank initialization helpers.
 

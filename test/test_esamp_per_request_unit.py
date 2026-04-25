@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for per-request side-train helpers."""
+"""Unit tests for per-request ESamp helpers."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from tllm.runtime import residual_runtime as esamp_runtime
 from tllm.runtime.vllm_patch import port_runtime_hooks
 
 
-class SideTrainPerRequestUnitTest(unittest.TestCase):
+class ESampPerRequestUnitTest(unittest.TestCase):
     class _ReplayFailGraph:
         def replay(self) -> None:
             raise RuntimeError("inference tensor update outside InferenceMode")
@@ -91,7 +91,7 @@ class SideTrainPerRequestUnitTest(unittest.TestCase):
         self.assertEqual(observed, ["prepare_inputs.post", "execute_model.post"])
         esamp_runtime.clear_dispatch_consumers()
 
-    def test_synchronize_side_train_also_flushes_registered_dispatch_consumers(self) -> None:
+    def test_synchronize_esamp_also_flushes_registered_dispatch_consumers(self) -> None:
         observed: list[str] = []
 
         class _SyncConsumer(BaseConsumer):
@@ -123,7 +123,7 @@ class SideTrainPerRequestUnitTest(unittest.TestCase):
         old_runtime_consumer = esamp_runtime.RUNTIME.consumer
         esamp_runtime.RUNTIME.consumer = _RuntimeConsumer()
         try:
-            esamp_runtime.synchronize_side_train()
+            esamp_runtime.synchronize_esamp()
         finally:
             esamp_runtime.RUNTIME.consumer = old_runtime_consumer
             esamp_runtime.clear_dispatch_consumers()
@@ -349,7 +349,7 @@ class SideTrainPerRequestUnitTest(unittest.TestCase):
             def __init__(self) -> None:
                 self.device = torch.device("cpu")
                 self.model = SimpleNamespace(
-                    side_train_hook_installed=True,
+                    esamp_hook_installed=True,
                     _tllm_compute_logits_wrapped=True,
                 )
 
@@ -507,9 +507,9 @@ class SideTrainPerRequestUnitTest(unittest.TestCase):
             tap_layer_paths=["model.model.layers[0]", "model.model.layers[-1]"],
             source_layer_path="model.model.layers[0]",
             target_layer_path="model.model.layers[-1]",
-            enable_side_train=True,
-            side_hidden_dim=256,
-            side_lr=1e-3,
+            enable_esamp_training=True,
+            distiller_hidden_dim=256,
+            distiller_lr=1e-3,
             per_request_models=True,
             per_request_model_bank=True,
             model_bank_slots=16,
@@ -657,9 +657,9 @@ class SideTrainPerRequestUnitTest(unittest.TestCase):
                 "Cfg",
                 (),
                 {
-                    "side_hidden_dim": 4,
-                    "side_lr": 1e-3,
-                    "enable_side_train": True,
+                    "distiller_hidden_dim": 4,
+                    "distiller_lr": 1e-3,
+                    "enable_esamp_training": True,
                     "per_request_models": True,
                     "per_request_model_bank": True,
                     "model_bank_slots": 0,
@@ -694,9 +694,9 @@ class SideTrainPerRequestUnitTest(unittest.TestCase):
 
         consumer.configure(
             SimpleNamespace(
-                side_hidden_dim=4,
-                side_lr=1e-3,
-                enable_side_train=True,
+                distiller_hidden_dim=4,
+                distiller_lr=1e-3,
+                enable_esamp_training=True,
                 per_request_models=True,
                 per_request_model_bank=False,
                 model_bank_slots=0,
@@ -742,9 +742,9 @@ class SideTrainPerRequestUnitTest(unittest.TestCase):
 
         consumer.configure(
             SimpleNamespace(
-                side_hidden_dim=4,
-                side_lr=1e-3,
-                enable_side_train=True,
+                distiller_hidden_dim=4,
+                distiller_lr=1e-3,
+                enable_esamp_training=True,
                 per_request_models=True,
                 per_request_model_bank=True,
                 model_bank_slots=2,
@@ -783,9 +783,9 @@ class SideTrainPerRequestUnitTest(unittest.TestCase):
 
         consumer.configure(
             SimpleNamespace(
-                side_hidden_dim=4,
-                side_lr=1e-3,
-                enable_side_train=False,
+                distiller_hidden_dim=4,
+                distiller_lr=1e-3,
+                enable_esamp_training=False,
                 per_request_models=False,
                 per_request_model_bank=False,
                 model_bank_slots=0,
@@ -1646,7 +1646,7 @@ class SideTrainPerRequestUnitTest(unittest.TestCase):
         )
         self.assertNotIn("return src", text)
         self.assertNotIn(
-            "if s.loss_sum is None or s.loss_count is None:\n            return SideTrainStats(loss_avg=0.0, loss_count=0)",
+            "if s.loss_sum is None or s.loss_count is None:\n            return ESampStats(loss_avg=0.0, loss_count=0)",
             text,
         )
         self.assertNotIn(

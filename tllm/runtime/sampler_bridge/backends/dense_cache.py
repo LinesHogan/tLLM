@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Legacy dense-cache helpers for post-filter candidate intervention."""
+"""Dense-cache helpers for post-filter candidate intervention."""
 
 from __future__ import annotations
 

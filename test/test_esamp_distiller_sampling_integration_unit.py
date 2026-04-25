@@ -45,7 +45,7 @@ class ESampDistillerSamplingIntegrationUnitTest(unittest.TestCase):
         )
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_beta=1.0,
             ),

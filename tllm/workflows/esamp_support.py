@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Workflow helpers for ESamp side-train on top of generic residual runtime."""
+"""Workflow helpers for ESamp on top of generic residual runtime."""
 
 from __future__ import annotations
 
@@ -16,13 +16,13 @@ from tllm.runtime.vllm_patch import capture_runner as _capture_runner
 
 def configure_esamp_runtime(
     *,
-    graph_scratch_rows: int,
-    tap_layer_paths: Sequence[str],
-    source_layer_path: str,
-    target_layer_path: str,
-    enable_side_train: bool,
-    side_hidden_dim: int,
-    side_lr: float,
+    graph_scratch_rows: int = 0,
+    tap_layer_paths: Sequence[str] | None = None,
+    source_layer_path: str = "model.model.layers[0].input_layernorm",
+    target_layer_path: str = "model.model.layers[-1].input_layernorm",
+    enable_esamp_training: bool = True,
+    distiller_hidden_dim: int = 128,
+    distiller_lr: float = 1e-3,
     per_request_models: bool = False,
     per_request_model_bank: bool = False,
     model_bank_slots: int = 0,
@@ -39,13 +39,14 @@ def configure_esamp_runtime(
     distiller_beta: float = 0.0,
     distiller_sampler_backend: str = "post_filter_exact",
 ) -> ESampConsumer:
+    tap_layer_paths = tuple(tap_layer_paths or (source_layer_path, target_layer_path))
     config = ESampConsumerConfig(
         graph_scratch_rows=int(graph_scratch_rows),
         source_layer_path=str(source_layer_path),
         target_layer_path=str(target_layer_path),
-        enable_side_train=bool(enable_side_train),
-        side_hidden_dim=int(side_hidden_dim),
-        side_lr=float(side_lr),
+        enable_esamp_training=bool(enable_esamp_training),
+        distiller_hidden_dim=int(distiller_hidden_dim),
+        distiller_lr=float(distiller_lr),
         per_request_models=bool(per_request_models),
         per_request_model_bank=bool(per_request_model_bank),
         model_bank_slots=int(model_bank_slots),
@@ -77,9 +78,9 @@ def configure_esamp_runtime(
         tap_layer_paths=tap_layer_paths,
         source_layer_path=str(source_layer_path),
         target_layer_path=str(target_layer_path),
-        enable_side_train=bool(enable_side_train),
-        side_hidden_dim=int(side_hidden_dim),
-        side_lr=float(side_lr),
+        enable_esamp_training=bool(enable_esamp_training),
+        distiller_hidden_dim=int(distiller_hidden_dim),
+        distiller_lr=float(distiller_lr),
         per_request_models=bool(per_request_models),
         per_request_model_bank=bool(per_request_model_bank),
         model_bank_slots=int(model_bank_slots),
@@ -116,7 +117,7 @@ def run_generate_with_request_mapping(
     )
 
 
-def run_side_train_throughput_case(
+def run_esamp_throughput_case(
     *,
     llm: object,
     prompts: list[str],
@@ -130,9 +131,9 @@ def run_side_train_throughput_case(
 ) -> dict[str, float]:
     from tllm.util import tools as _tool_helpers
 
-    runtime.set_side_train_enabled(train_enabled)
-    runtime.synchronize_side_train()
-    _ = runtime.read_and_reset_side_train_stats(sync=True)
+    runtime.set_esamp_training_enabled(train_enabled)
+    runtime.synchronize_esamp()
+    _ = runtime.read_and_reset_esamp_stats(sync=True)
 
     params = [
         _tool_helpers.build_greedy_params(
@@ -143,7 +144,7 @@ def run_side_train_throughput_case(
         for index in range(len(prompts))
     ]
 
-    tag = "side_train" if train_enabled else "tap_only"
+    tag = "esamp" if train_enabled else "tap_only"
     if log_memory:
         _tool_helpers.print_gpu_mem(f"[{tag}] before_warmup")
 
@@ -166,7 +167,7 @@ def run_side_train_throughput_case(
 
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - start_t
-    stats = runtime.read_and_reset_side_train_stats(sync=True)
+    stats = runtime.read_and_reset_esamp_stats(sync=True)
 
     req_per_s = float(total_requests / elapsed) if elapsed > 0 else 0.0
     out_tok_per_s = float(total_output_tokens / elapsed) if elapsed > 0 else 0.0
@@ -184,5 +185,5 @@ def run_side_train_throughput_case(
 __all__ = [
     "configure_esamp_runtime",
     "run_generate_with_request_mapping",
-    "run_side_train_throughput_case",
+    "run_esamp_throughput_case",
 ]

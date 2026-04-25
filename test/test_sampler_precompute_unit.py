@@ -39,7 +39,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
     def test_provider_prepare_step_prefers_runtime_precomputed_cache(self) -> None:
         engine = mock.Mock()
         consumer = ESampConsumer(
-            ESampConsumerConfig(enable_side_train=True, enable_distiller_intervention=True, distiller_beta=0.5),
+            ESampConsumerConfig(enable_esamp_training=True, enable_distiller_intervention=True, distiller_beta=0.5),
             engine=engine,
         )
         runtime = SimpleNamespace(
@@ -64,7 +64,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
     def test_provider_prepare_step_prefers_compact_cache_over_full_buffer_mask_scan(self) -> None:
         engine = mock.Mock()
         consumer = ESampConsumer(
-            ESampConsumerConfig(enable_side_train=True, enable_distiller_intervention=True, distiller_beta=0.5),
+            ESampConsumerConfig(enable_esamp_training=True, enable_distiller_intervention=True, distiller_beta=0.5),
             engine=engine,
         )
         runtime = SimpleNamespace(
@@ -99,7 +99,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
         )
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_beta=0.5,
             ),
@@ -136,7 +136,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
         engine = mock.Mock()
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_beta=0.5,
             ),
@@ -171,7 +171,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
         )
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_sampler_backend="pre_filter_dense",
                 distiller_beta=0.5,
@@ -209,7 +209,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
         engine.state = SimpleNamespace(per_request_models=False)
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_beta=0.5,
             ),
@@ -242,7 +242,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
         engine.prepare_sampling_slots_for_step.return_value = True
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_beta=0.5,
             ),
@@ -271,7 +271,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
         engine = mock.Mock()
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_beta=0.0,
             ),
@@ -303,7 +303,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
     def test_prepare_step_full_row_cache_avoids_nonzero(self) -> None:
         engine = mock.Mock()
         consumer = ESampConsumer(
-            ESampConsumerConfig(enable_side_train=True, enable_distiller_intervention=True, distiller_beta=0.5),
+            ESampConsumerConfig(enable_esamp_training=True, enable_distiller_intervention=True, distiller_beta=0.5),
             engine=engine,
         )
         runtime = SimpleNamespace(
@@ -331,7 +331,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
         engine = mock.Mock()
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_sampler_backend="pre_filter_dense",
                 distiller_beta=0.5,
@@ -375,7 +375,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
         )
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_beta=0.5,
             ),
@@ -420,7 +420,7 @@ class SamplerPrecomputeUnitTest(unittest.TestCase):
         engine.predict_hidden_for_sampling_capture.side_effect = _capture
         consumer = ESampConsumer(
             ESampConsumerConfig(
-                enable_side_train=True,
+                enable_esamp_training=True,
                 enable_distiller_intervention=True,
                 distiller_sampler_backend="pre_filter_dense",
                 distiller_beta=0.5,

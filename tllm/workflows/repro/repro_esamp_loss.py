@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 
 from tllm.runtime import residual_runtime as core
-from tllm.workflows import side_train_support as esamp_workflow_support
+from tllm.workflows import esamp_support as esamp_workflow_support
 from tllm.util.tools import build_prompt_batch, read_prompts, shutdown_llm_instance
 
 
@@ -24,8 +24,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--graph-scratch-rows", type=int, default=0)
     parser.add_argument("--source-layer-path", type=str, default="model.model.layers[0].input_layernorm")
     parser.add_argument("--target-layer-path", type=str, default="model.model.layers[-1].input_layernorm")
-    parser.add_argument("--side-hidden-dim", type=int, default=256)
-    parser.add_argument("--side-lr", type=float, default=1e-3)
+    parser.add_argument("--distiller-hidden-dim", type=int, default=256)
+    parser.add_argument("--distiller-lr", type=float, default=1e-3)
 
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--max-new-tokens", type=int, default=64)
@@ -56,9 +56,9 @@ def main() -> int:
         tap_layer_paths=[args.source_layer_path, args.target_layer_path],
         source_layer_path=args.source_layer_path,
         target_layer_path=args.target_layer_path,
-        enable_side_train=True,
-        side_hidden_dim=int(args.side_hidden_dim),
-        side_lr=float(args.side_lr),
+        enable_esamp_training=True,
+        distiller_hidden_dim=int(args.distiller_hidden_dim),
+        distiller_lr=float(args.distiller_lr),
     )
 
     llm = core.make_llm(
@@ -71,7 +71,7 @@ def main() -> int:
     )
 
     try:
-        result = esamp_workflow_support.run_side_train_throughput_case(
+        result = esamp_workflow_support.run_esamp_throughput_case(
             llm=llm,
             prompts=bench_prompts,
             max_new_tokens=int(args.max_new_tokens),
@@ -85,7 +85,7 @@ def main() -> int:
         shutdown_llm_instance(llm, cooldown_s=1.0)
 
     print(
-        f"side_train smoke: req/s={result['req_per_s']:.3f} out_tok/s={result['out_tok_per_s']:.3f} "
+        f"esamp smoke: req/s={result['req_per_s']:.3f} out_tok/s={result['out_tok_per_s']:.3f} "
         f"loss_avg={result['loss_avg']:.6e} loss_count={int(result['loss_count'])}"
     )
 

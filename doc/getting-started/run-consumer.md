@@ -50,16 +50,16 @@ python starter.py --max-new-tokens 32
 
 ## Key Code Shape
 
-`starter.py` uses `side_train_support.configure_esamp_runtime(...)` instead of manually instantiating `ESampConsumer` and registering it. That helper keeps ESamp configuration, runtime state, sampler provider setup, and request mapping in one place.
+`starter.py` uses `esamp_support.configure_esamp_runtime(...)` instead of manually instantiating `ESampConsumer` and registering it. That helper keeps ESamp configuration, runtime state, sampler provider setup, and request mapping in one place.
 
 ```python
 from vllm import SamplingParams
 
 from tllm.runtime import residual_runtime as runtime
 from tllm.util.tools import make_llm
-from tllm.workflows import side_train_support
+from tllm.workflows import esamp_support
 
-consumer = side_train_support.configure_esamp_runtime(
+consumer = esamp_support.configure_esamp_runtime(
     graph_scratch_rows=64,
     tap_layer_paths=[
         "model.model.layers[0].input_layernorm",
@@ -67,9 +67,9 @@ consumer = side_train_support.configure_esamp_runtime(
     ],
     source_layer_path="model.model.layers[0].input_layernorm",
     target_layer_path="model.model.layers[-1].input_layernorm",
-    enable_side_train=True,
-    side_hidden_dim=128,
-    side_lr=1e-3,
+    enable_esamp_training=True,
+    distiller_hidden_dim=128,
+    distiller_lr=1e-3,
     per_request_model_bank=True,
     model_bank_slots=16,
     model_bank_rank=64,
@@ -95,7 +95,7 @@ params = [
     for i in range(16)
 ]
 
-outputs = side_train_support.run_generate_with_request_mapping(
+outputs = esamp_support.run_generate_with_request_mapping(
     llm,
     prompts,
     params,
@@ -103,8 +103,8 @@ outputs = side_train_support.run_generate_with_request_mapping(
     request_sample_indices=list(range(16)),
 )
 
-runtime.synchronize_side_train()
-stats = runtime.read_and_reset_side_train_stats(sync=True)
+runtime.synchronize_esamp()
+stats = runtime.read_and_reset_esamp_stats(sync=True)
 print(stats)
 ```
 
@@ -116,7 +116,7 @@ Use the aligned benchmark when you want a meaningful throughput ratio:
 
 ```bash
 VLLM_USE_FLASHINFER_SAMPLER=1 \
-python -m tllm.workflows.benchmarks.per_request_side_train_benchmark \
+python -m tllm.workflows.benchmarks.per_request_esamp_benchmark \
   --emit-json-summary \
   --model-name Qwen/Qwen2.5-0.5B-Instruct \
   --dtype bfloat16 \
@@ -132,7 +132,7 @@ python -m tllm.workflows.benchmarks.per_request_side_train_benchmark \
   --sampling-temperature 0.8 \
   --sampling-top-p 0.95 \
   --sampling-top-k -1 \
-  --side-lr 1e-3 \
+  --distiller-lr 1e-3 \
   --model-bank-flush-interval 1 \
   --model-bank-init-method ffn_fast_svd \
   --trajectory-topk 1 \

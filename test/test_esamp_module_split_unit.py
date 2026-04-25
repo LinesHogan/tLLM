@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for extracted side-train module split."""
+"""Unit tests for extracted ESamp module split."""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from pathlib import Path
 import torch
 
 import tllm.consumers.esamp.engine as engine
-from tllm.consumers.esamp.engine import ESampTrainEngine, SideTrainStats, group_row_indices_by_prompt
+from tllm.consumers.esamp.engine import ESampTrainEngine, ESampStats, group_row_indices_by_prompt
 from tllm.consumers.esamp.model import LowRankGatedResidualModel
 
 
-class SideTrainModuleSplitUnitTest(unittest.TestCase):
+class ESampModuleSplitUnitTest(unittest.TestCase):
     def test_engine_uses_typed_storage_dataclass(self) -> None:
         self.assertTrue(hasattr(engine, "_EngineStorage"))
         self.assertTrue(dataclasses.is_dataclass(engine._EngineStorage))
@@ -68,8 +68,8 @@ class SideTrainModuleSplitUnitTest(unittest.TestCase):
     def test_engine_surface_exports_real_esamp_train_engine(self) -> None:
         self.assertEqual(ESampTrainEngine.__name__, "ESampTrainEngine")
 
-    def test_engine_package_no_longer_exports_dummy_side_train_consumer(self) -> None:
-        self.assertFalse(hasattr(engine, "DummySideTrainConsumer"))
+    def test_engine_package_no_longer_exports_dummy_esamp_consumer(self) -> None:
+        self.assertFalse(hasattr(engine, "DummyESampConsumer"))
 
     def test_esamp_engine_is_flat_module_not_package(self) -> None:
         from pathlib import Path
@@ -99,7 +99,7 @@ class SideTrainModuleSplitUnitTest(unittest.TestCase):
         self.assertEqual(tuple(y.shape), (3, 8))
 
     def test_stats_dataclass_fields(self) -> None:
-        s = SideTrainStats(loss_avg=1.25, loss_count=4)
+        s = ESampStats(loss_avg=1.25, loss_count=4)
         self.assertEqual(s.loss_avg, 1.25)
         self.assertEqual(s.loss_count, 4)
         self.assertEqual(s.trace_losses, ())

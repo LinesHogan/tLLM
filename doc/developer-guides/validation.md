@@ -94,7 +94,7 @@ For ESamp, unit tests are not enough. You also need an end-to-end run where `los
 
 ```bash
 python -m pytest -q \
-  test/test_side_train_per_request_unit.py \
+  test/test_esamp_per_request_unit.py \
   test/test_esamp_distiller_sampling_integration_unit.py \
   test/test_esamp_model_bank_backend_unit.py
 ```

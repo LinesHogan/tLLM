@@ -15,8 +15,6 @@ SamplerBackend = Literal[
     "post_filter_exact_torch",
     "pre_filter_dense",
     "post_filter_dense_cache",
-    "legacy_post_filter_dense_cache",
-    "legacy_fixed_topk_minp",
 ]
 SAMPLER_BACKEND_CHOICES: tuple[str, ...] = (
     "post_filter_exact",
@@ -24,8 +22,6 @@ SAMPLER_BACKEND_CHOICES: tuple[str, ...] = (
     "post_filter_exact_torch",
     "pre_filter_dense",
     "post_filter_dense_cache",
-    "legacy_post_filter_dense_cache",
-    "legacy_fixed_topk_minp",
 )
 _SAMPLER_BACKEND_ALIASES: dict[str, CanonicalSamplerBackend] = {
     "post_filter_exact": "post_filter_exact",
@@ -33,8 +29,6 @@ _SAMPLER_BACKEND_ALIASES: dict[str, CanonicalSamplerBackend] = {
     "post_filter_exact_torch": "post_filter_exact",
     "pre_filter_dense": "pre_filter_dense",
     "post_filter_dense_cache": "post_filter_dense_cache",
-    "legacy_post_filter_dense_cache": "post_filter_dense_cache",
-    "legacy_fixed_topk_minp": "post_filter_exact",
 }
 TemperatureMode = Literal["all_random", "all_greedy", "mixed"]
 CandidateSamplingMode = Literal["random", "greedy", "mixed"]

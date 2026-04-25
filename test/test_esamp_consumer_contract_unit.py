@@ -16,7 +16,7 @@ from tllm.contracts.runtime_context import RuntimeContext
 from tllm.ports.base import PortKind
 from tllm.ports.residual_stream import ResidualLocator
 from tllm.runtime import residual_runtime as esamp_runtime
-from tllm.workflows import side_train_support
+from tllm.workflows import esamp_support
 
 
 class ESampConsumerContractUnitTest(unittest.TestCase):
@@ -49,8 +49,8 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
         self.assertEqual([read.role for read in flow.reads[:2]], ["source", "target"])
         self.assertEqual(flow.bundle_key, ("engine_step_id", "phase"))
 
-    def test_flows_are_empty_when_side_train_is_disabled(self) -> None:
-        consumer = ESampConsumer(ESampConsumerConfig(enable_side_train=False), engine=mock.Mock())
+    def test_flows_are_empty_when_esamp_is_disabled(self) -> None:
+        consumer = ESampConsumer(ESampConsumerConfig(enable_esamp_training=False), engine=mock.Mock())
 
         self.assertEqual(tuple(consumer.flows()), ())
 
@@ -69,8 +69,8 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
                 self.calls.append(config)
 
         engine = _Engine()
-        initial = ESampConsumerConfig(side_hidden_dim=32, enable_side_train=True)
-        updated = ESampConsumerConfig(side_hidden_dim=16, enable_side_train=False)
+        initial = ESampConsumerConfig(distiller_hidden_dim=32, enable_esamp_training=True)
+        updated = ESampConsumerConfig(distiller_hidden_dim=16, enable_esamp_training=False)
         consumer = ESampConsumer(initial, engine=engine)
 
         consumer.update_config(updated)
@@ -82,9 +82,9 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
     def test_esamp_workflows_no_longer_import_consumer_runtime_adapter(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         for rel in (
-            "tllm/workflows/benchmarks/side_train_benchmark.py",
-            "tllm/workflows/benchmarks/per_request_side_train_benchmark.py",
-            "tllm/workflows/repro/repro_side_train_loss.py",
+            "tllm/workflows/benchmarks/esamp_benchmark.py",
+            "tllm/workflows/benchmarks/per_request_esamp_benchmark.py",
+            "tllm/workflows/repro/repro_esamp_loss.py",
         ):
             text = (repo_root / rel).read_text(encoding="utf-8")
             self.assertNotIn("tllm.consumers.esamp.runtime_adapter", text, msg=rel)
@@ -231,14 +231,14 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
             consumer._stage_rows(rows_hidden, stage=wrong_stage)
 
     def test_configure_esamp_runtime_installs_esamp_consumer(self) -> None:
-        side_train_support.configure_esamp_runtime(
+        esamp_support.configure_esamp_runtime(
             graph_scratch_rows=64,
             tap_layer_paths=["model.model.layers[0]", "model.model.layers[-1]"],
             source_layer_path="model.model.layers[0]",
             target_layer_path="model.model.layers[-1]",
-            enable_side_train=True,
-            side_hidden_dim=128,
-            side_lr=1e-3,
+            enable_esamp_training=True,
+            distiller_hidden_dim=128,
+            distiller_lr=1e-3,
         )
         self.assertIsInstance(esamp_runtime.RUNTIME.consumer, ESampConsumer)
         self.assertIsNotNone(esamp_runtime.RUNTIME.dispatch_plan)
@@ -253,40 +253,40 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
         self.assertTrue(targets)
         self.assertIs(targets[0].consumer, esamp_runtime.RUNTIME.consumer)
 
-    def test_configure_esamp_runtime_with_disabled_side_train_leaves_no_active_dispatch_plan(self) -> None:
-        side_train_support.configure_esamp_runtime(
+    def test_configure_esamp_runtime_with_disabled_esamp_leaves_no_active_dispatch_plan(self) -> None:
+        esamp_support.configure_esamp_runtime(
             graph_scratch_rows=64,
             tap_layer_paths=["model.model.layers[0]", "model.model.layers[-1]"],
             source_layer_path="model.model.layers[0]",
             target_layer_path="model.model.layers[-1]",
-            enable_side_train=False,
-            side_hidden_dim=128,
-            side_lr=1e-3,
+            enable_esamp_training=False,
+            distiller_hidden_dim=128,
+            distiller_lr=1e-3,
         )
 
         self.assertIsInstance(esamp_runtime.RUNTIME.consumer, ESampConsumer)
         self.assertIsNone(esamp_runtime.RUNTIME.dispatch_plan)
 
     def test_configure_esamp_runtime_keeps_single_formal_engine_type(self) -> None:
-        side_train_support.configure_esamp_runtime(
+        esamp_support.configure_esamp_runtime(
             graph_scratch_rows=64,
             tap_layer_paths=["model.model.layers[0]", "model.model.layers[-1]"],
             source_layer_path="model.model.layers[0]",
             target_layer_path="model.model.layers[-1]",
-            enable_side_train=True,
-            side_hidden_dim=128,
-            side_lr=1e-3,
+            enable_esamp_training=True,
+            distiller_hidden_dim=128,
+            distiller_lr=1e-3,
         )
         self.assertEqual(type(esamp_runtime.RUNTIME.consumer._engine).__name__, "ESampTrainEngine")
 
-        side_train_support.configure_esamp_runtime(
+        esamp_support.configure_esamp_runtime(
             graph_scratch_rows=64,
             tap_layer_paths=["model.model.layers[0]", "model.model.layers[-1]"],
             source_layer_path="model.model.layers[0]",
             target_layer_path="model.model.layers[-1]",
-            enable_side_train=True,
-            side_hidden_dim=128,
-            side_lr=1e-3,
+            enable_esamp_training=True,
+            distiller_hidden_dim=128,
+            distiller_lr=1e-3,
         )
 
         self.assertEqual(type(esamp_runtime.RUNTIME.consumer._engine).__name__, "ESampTrainEngine")
@@ -298,18 +298,18 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
         try:
             esamp_runtime.RUNTIME.consumer = consumer
             with mock.patch.object(consumer, "synchronize", side_effect=lambda: calls.append("sync")), mock.patch.object(
-                consumer, "update_config", side_effect=lambda config: calls.append(f"update:{config.enable_side_train}")
-            ), mock.patch.object(side_train_support.runtime, "clear_dispatch_consumers"), mock.patch.object(
-                side_train_support.runtime, "set_runtime_consumer"
-            ), mock.patch.object(side_train_support.runtime, "configure_runtime"):
-                side_train_support.configure_esamp_runtime(
+                consumer, "update_config", side_effect=lambda config: calls.append(f"update:{config.enable_esamp_training}")
+            ), mock.patch.object(esamp_support.runtime, "clear_dispatch_consumers"), mock.patch.object(
+                esamp_support.runtime, "set_runtime_consumer"
+            ), mock.patch.object(esamp_support.runtime, "configure_runtime"):
+                esamp_support.configure_esamp_runtime(
                     graph_scratch_rows=64,
                     tap_layer_paths=["model.model.layers[0]", "model.model.layers[-1]"],
                     source_layer_path="model.model.layers[0]",
                     target_layer_path="model.model.layers[-1]",
-                    enable_side_train=False,
-                    side_hidden_dim=128,
-                    side_lr=1e-3,
+                    enable_esamp_training=False,
+                    distiller_hidden_dim=128,
+                    distiller_lr=1e-3,
                 )
         finally:
             esamp_runtime.RUNTIME.consumer = old_consumer

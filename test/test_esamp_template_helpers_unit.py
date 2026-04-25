@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for extracted side-train template helper functions."""
+"""Unit tests for extracted ESamp template helper functions."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class _Mod(torch.nn.Module):
         self.down_proj = torch.nn.Linear(4, 6, bias=False)
 
 
-class SideTrainTemplateHelpersUnitTest(unittest.TestCase):
+class ESampTemplateHelpersUnitTest(unittest.TestCase):
     def test_model_bank_method_aliases(self) -> None:
         self.assertTrue(model_bank_uses_ffn_fast_svd(_Cfg("ffn_fast_svd")))
         self.assertTrue(model_bank_uses_ffn_fast_svd(_Cfg("ffn-fast-svd")))

@@ -55,7 +55,7 @@ MSE 验证失败说明 parallel 模式和 gold 模式下的 hidden states 存在
 
 - **模型加载阶段 OOM**: 降低 `--gpu-memory-utilization`（默认 0.8，可降至 0.5~0.6）
 - **高 `sampling_n` 时 OOM**: `n=16` 等高采样场景下，sampling/sorting 路径的显存压力可能先于 side-train 达到瓶颈。增大 `--max-model-len` (建议 `>=512`) 或降低 `n`
-- **Side-train 训练阶段 OOM**: 降低 `--side-hidden-dim` 或 `--model-bank-rank`
+- **Side-train 训练阶段 OOM**: 降低 `--distiller-hidden-dim` 或 `--model-bank-rank`
 
 ### CUDA Graph capture 相关的错误？
 

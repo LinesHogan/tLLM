@@ -91,7 +91,7 @@ Debug 时可以临时 print；提交前把热路径打印删掉，或放到低�
 - 模型加载 OOM：降低 `--gpu-memory-utilization`
 - 高 `sampling_n` OOM：增大 `--max-model-len` 或降低 `n`
 - consumer 暂存过多：降低 queue size，按 step stride export，或 drop
-- side-train OOM：降低 `--side-hidden-dim` 或 `--model-bank-rank`
+- side-train OOM：降低 `--distiller-hidden-dim` 或 `--model-bank-rank`
 
 vLLM 异常退出后，先检查 stale worker：
 

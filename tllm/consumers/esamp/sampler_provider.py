@@ -103,7 +103,7 @@ class ESampSamplerModifierProvider(SamplerModifierProvider):
     def is_active(self) -> bool:
         return (
             bool(self.config.enable_distiller_intervention)
-            and bool(self.config.enable_side_train)
+            and bool(self.config.enable_esamp_training)
             and float(getattr(self.config, "distiller_beta", 0.0) or 0.0) != 0.0
         )
 

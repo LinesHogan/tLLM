@@ -11,7 +11,7 @@ from tllm.contracts.port_bundle import PortBundle
 from tllm.contracts.hidden_batch import HiddenBatch
 from tllm.contracts.runtime_context import RunnerLike, RuntimeContext
 from tllm.runtime.dispatch_plan import DispatchPlan
-from tllm.runtime.legacy_consumer_compat import dispatch_legacy_event
+from tllm.runtime.consumer_compat import dispatch_consumer_event
 
 
 class RuntimeWithDispatchPlan(Protocol):
@@ -131,7 +131,7 @@ def dispatch_runtime_event(
         payload = batch_factory()
 
     for target in targets:
-        dispatch_legacy_event(
+        dispatch_consumer_event(
             consumer=target.consumer,
             payload=payload,
             event_name=event_name,

@@ -16,9 +16,9 @@ class ESampConsumerConfig:
     graph_scratch_rows: int = 0
     source_layer_path: str = "model.model.layers[0].input_layernorm"
     target_layer_path: str = "model.model.layers[-1].input_layernorm"
-    enable_side_train: bool = True
-    side_hidden_dim: int = 128
-    side_lr: float = 1e-3
+    enable_esamp_training: bool = True
+    distiller_hidden_dim: int = 128
+    distiller_lr: float = 1e-3
     per_request_models: bool = False
     per_request_model_bank: bool = False
     model_bank_slots: int = 0

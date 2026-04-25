@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for the legacy event bridge extracted from runtime hooks."""
+"""Unit tests for the hidden event bridge extracted from runtime hooks."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ import torch
 
 from tllm.ports.residual_stream import ResidualLocator
 from tllm.runtime.ports.residual_bindings import ResidualPathBinding
-from tllm.runtime import legacy_event_bridge
+from tllm.runtime import hidden_event_bridge
 
 
-class RuntimeLegacyEventBridgeUnitTest(unittest.TestCase):
+class RuntimeHiddenEventBridgeUnitTest(unittest.TestCase):
     def _core(self):
         runtime = type("Runtime", (), {})()
         runtime.tap_decode_hidden = {
@@ -46,7 +46,7 @@ class RuntimeLegacyEventBridgeUnitTest(unittest.TestCase):
     def test_build_runtime_hidden_batch_uses_active_decode_rows_and_metadata(self) -> None:
         core = self._core()
 
-        batch = legacy_event_bridge.build_runtime_hidden_batch(core=core, layer_path="layers.0")
+        batch = hidden_event_bridge.build_runtime_hidden_batch(core=core, layer_path="layers.0")
 
         self.assertIsNotNone(batch)
         assert batch is not None
@@ -62,7 +62,7 @@ class RuntimeLegacyEventBridgeUnitTest(unittest.TestCase):
         core.RUNTIME.decode_request_ids = ["reqA"]
 
         with self.assertRaisesRegex(RuntimeError, "decode runtime metadata is inconsistent"):
-            legacy_event_bridge.build_runtime_hidden_batch(core=core, layer_path="layers.0")
+            hidden_event_bridge.build_runtime_hidden_batch(core=core, layer_path="layers.0")
 
     def test_dispatch_deferred_layer_batches_dispatches_each_unique_layer_once(self) -> None:
         core = self._core()
@@ -75,8 +75,8 @@ class RuntimeLegacyEventBridgeUnitTest(unittest.TestCase):
         core.RUNTIME.residual_bindings.pop("layers.1")
         runner = type("Runner", (), {"device": torch.device("cpu"), "model": object()})()
 
-        with mock.patch.object(legacy_event_bridge._common_hooks, "dispatch_runtime_event", side_effect=[1]) as p_dispatch:
-            dispatched = legacy_event_bridge.dispatch_deferred_layer_batches(core=core, runner=runner)
+        with mock.patch.object(hidden_event_bridge._common_hooks, "dispatch_runtime_event", side_effect=[1]) as p_dispatch:
+            dispatched = hidden_event_bridge.dispatch_deferred_layer_batches(core=core, runner=runner)
 
         self.assertEqual(dispatched, 1)
         p_dispatch.assert_called_once()
@@ -90,8 +90,8 @@ class RuntimeLegacyEventBridgeUnitTest(unittest.TestCase):
         core = self._core()
         runner = type("Runner", (), {"device": torch.device("cpu"), "model": object()})()
 
-        with mock.patch.object(legacy_event_bridge._common_hooks, "dispatch_runtime_event") as p_dispatch:
-            legacy_event_bridge.dispatch_layer_lifecycle_events(
+        with mock.patch.object(hidden_event_bridge._common_hooks, "dispatch_runtime_event") as p_dispatch:
+            hidden_event_bridge.dispatch_layer_lifecycle_events(
                 core=core,
                 runner=runner,
                 layer_path="layers.1",
@@ -101,14 +101,14 @@ class RuntimeLegacyEventBridgeUnitTest(unittest.TestCase):
         event_names = [call.kwargs["event_name"] for call in p_dispatch.call_args_list]
         self.assertEqual(event_names, ["layer.pre", "layer.post", "block.end", "stack.end"])
 
-    def test_legacy_event_bridge_can_resolve_default_paths_from_residual_bindings(self) -> None:
+    def test_hidden_event_bridge_can_resolve_default_paths_from_residual_bindings(self) -> None:
         core = self._core()
         core.RUNTIME.source_resolved_path = ""
         core.RUNTIME.target_resolved_path = ""
         runner = type("Runner", (), {"device": torch.device("cpu"), "model": object()})()
 
-        with mock.patch.object(legacy_event_bridge._common_hooks, "dispatch_runtime_event", side_effect=[1, 1]) as p_dispatch:
-            dispatched = legacy_event_bridge.dispatch_deferred_layer_batches(core=core, runner=runner)
+        with mock.patch.object(hidden_event_bridge._common_hooks, "dispatch_runtime_event", side_effect=[1, 1]) as p_dispatch:
+            dispatched = hidden_event_bridge.dispatch_deferred_layer_batches(core=core, runner=runner)
 
         self.assertEqual(dispatched, 2)
         layer_paths = [call.kwargs["layer_path"] for call in p_dispatch.call_args_list]

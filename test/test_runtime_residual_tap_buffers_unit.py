@@ -35,8 +35,8 @@ class RuntimeResidualTapBuffersUnitTest(unittest.TestCase):
         self.assertEqual(runtime.tap_decode_hidden["layers.0"].dtype, torch.float32)
         self.assertIn("tllm_residual_capture_scratch_0", layer._buffers)
         self.assertIn("tllm_residual_capture_rows_0", layer._buffers)
-        self.assertNotIn("side_train_scratch_0", layer._buffers)
-        self.assertNotIn("side_train_decode_0", layer._buffers)
+        self.assertNotIn("esamp_scratch_0", layer._buffers)
+        self.assertNotIn("esamp_decode_0", layer._buffers)
 
 
 if __name__ == "__main__":

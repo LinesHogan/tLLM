@@ -20,6 +20,8 @@ You will learn:
 
 It is not a production algorithm. It is a teaching example for a healthy async pattern.
 
+The main implementation lives in `tllm/consumers/dummy/consumer.py`.
+
 ## 1. Copy the Template
 
 ```bash
@@ -124,7 +126,7 @@ consumer.synchronize()
 stats = consumer.read_stats()
 ```
 
-More complex consumers may provide a workflow helper, as ESamp does through `side_train_support.configure_esamp_runtime(...)`.
+More complex consumers may provide a workflow helper, as ESamp does through `esamp_support.configure_esamp_runtime(...)`.
 
 ## Validate It
 

@@ -41,11 +41,11 @@ class StarterUnitTest(unittest.TestCase):
         starter = self._load_starter()
         args = starter._parse_args(["--num-answers", "16", "--distiller-beta", "0.25"])
 
-        with mock.patch.object(starter.side_train_support, "configure_esamp_runtime") as configure:
+        with mock.patch.object(starter.esamp_support, "configure_esamp_runtime") as configure:
             starter._configure_esamp(args)
 
         kwargs = configure.call_args.kwargs
-        self.assertTrue(kwargs["enable_side_train"])
+        self.assertTrue(kwargs["enable_esamp_training"])
         self.assertTrue(kwargs["per_request_model_bank"])
         self.assertEqual(kwargs["model_bank_slots"], 16)
         self.assertTrue(kwargs["enable_distiller_intervention"])

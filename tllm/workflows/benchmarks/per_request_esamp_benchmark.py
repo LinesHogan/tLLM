@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Benchmark n>1 side-train with single/per-request/model-bank variants.
+"""Benchmark n>1 ESamp generation with single/per-request/model-bank variants.
 
 Compares four modes:
-1) single side model, train off
-2) single side model, train on
-3) per-request side models, train on
+1) single distiller, train off
+2) single distiller, train on
+3) per-request distillers, train on
 4) per-request model-bank, train on
 
 Also reports per-request loss trajectories for mode (3).
@@ -32,13 +32,11 @@ from tllm.workflows.common import (
     sum_all_completions as _sum_all_completions,
 )
 from tllm.runtime import residual_runtime as core
-from tllm.workflows import side_train_support as esamp_workflow_support
+from tllm.workflows import esamp_support as esamp_workflow_support
 from tllm.util.tools import build_prompt_batch, read_prompts, shutdown_llm_instance
 from tllm.runtime.sampler_bridge.types import SAMPLER_BACKEND_CHOICES
 
 JSON_SUMMARY_PREFIX = "PER_REQUEST_JSON_SUMMARY:"
-LOSS_PARITY_CASE_NAMES = ("single_on", "per_request_on", "model_bank_on")
-DEFAULT_LOSS_PARITY_ABS_TOL = 0.05
 _TRACE_DISTILLER_TIMING = os.getenv("TLLM_TRACE_DISTILLER_TIMING", "") == "1"
 
 
@@ -83,8 +81,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--graph-scratch-rows", type=int, default=0)
     parser.add_argument("--source-layer-path", type=str, default="model.model.layers[0].input_layernorm")
     parser.add_argument("--target-layer-path", type=str, default="model.model.layers[-1].input_layernorm")
-    parser.add_argument("--side-hidden-dim", type=int, default=256)
-    parser.add_argument("--side-lr", type=float, default=1e-3)
+    parser.add_argument("--distiller-hidden-dim", type=int, default=256)
+    parser.add_argument("--distiller-lr", type=float, default=1e-3)
     parser.add_argument("--enable-distiller-intervention", action="store_true")
     parser.add_argument("--distiller-beta", type=float, default=0.0)
     parser.add_argument(
@@ -244,178 +242,11 @@ def _requires_isolated_llm_cases(*, enable_distiller_intervention: bool, distill
     return bool(enable_distiller_intervention) and float(distiller_beta) != 0.0
 
 
-def _case_ratio(legacy_case: Dict[str, float], base_consumer_case: Dict[str, float]) -> float:
-    denom = float(legacy_case.get("out_tok_per_s", 0.0) or 0.0)
-    if denom <= 0:
-        return 0.0
-    return float(base_consumer_case.get("out_tok_per_s", 0.0) or 0.0) / denom
-
-
-def _build_compare_summary(
-    legacy_cases: Dict[str, Dict[str, float]],
-    base_consumer_cases: Dict[str, Dict[str, float]],
-) -> Dict[str, object]:
-    case_names = sorted(set(legacy_cases) & set(base_consumer_cases))
-    summary: Dict[str, object] = {
-        "case_ratios": {name: _case_ratio(legacy_cases[name], base_consumer_cases[name]) for name in case_names},
-        "loss_deltas": {
-            name: float(base_consumer_cases[name].get("loss_avg", 0.0) or 0.0)
-            - float(legacy_cases[name].get("loss_avg", 0.0) or 0.0)
-            for name in case_names
-        },
-        "loss_count_deltas": {
-            name: float(base_consumer_cases[name].get("loss_count", 0.0) or 0.0)
-            - float(legacy_cases[name].get("loss_count", 0.0) or 0.0)
-            for name in case_names
-        },
-        "legacy": legacy_cases,
-        "base_consumer": base_consumer_cases,
-    }
-    summary["loss_parity_passed"] = _loss_parity_passes(summary)
-    summary["loss_parity_abs_tol"] = DEFAULT_LOSS_PARITY_ABS_TOL
-    return summary
-
-
-def _loss_parity_passes(summary: Dict[str, object], *, abs_loss_tol: float = DEFAULT_LOSS_PARITY_ABS_TOL) -> bool:
-    loss_deltas = cast(Dict[str, float], summary["loss_deltas"])
-    loss_count_deltas = cast(Dict[str, float], summary["loss_count_deltas"])
-    legacy_cases = cast(Dict[str, Dict[str, float]], summary["legacy"])
-    base_consumer_cases = cast(Dict[str, Dict[str, float]], summary["base_consumer"])
-
-    parity_cases = [
-        name
-        for name in LOSS_PARITY_CASE_NAMES
-        if name in loss_deltas
-        and name in loss_count_deltas
-        and name in legacy_cases
-        and name in base_consumer_cases
-    ]
-    if not parity_cases:
-        return False
-
-    for name in parity_cases:
-        legacy_loss_count = float(legacy_cases[name].get("loss_count", 0.0) or 0.0)
-        base_loss_count = float(base_consumer_cases[name].get("loss_count", 0.0) or 0.0)
-        if legacy_loss_count <= 0.0 or base_loss_count <= 0.0:
-            return False
-        if float(loss_count_deltas[name]) != 0.0:
-            return False
-        if abs(float(loss_deltas[name])) > abs_loss_tol:
-            return False
-    return True
-
-
 def _append_bool_flag(cmd: List[str], enabled: bool, positive_flag: str, negative_flag: str | None = None) -> None:
     if enabled:
         cmd.append(positive_flag)
     elif negative_flag is not None:
         cmd.append(negative_flag)
-
-
-def _build_subprocess_cmd(args: argparse.Namespace, implementation: str) -> List[str]:
-    cmd = [
-        sys.executable,
-        "-m",
-        "tllm.workflows.benchmarks.per_request_side_train_benchmark",
-        "--model-name",
-        str(args.model_name),
-        "--dtype",
-        str(args.dtype),
-        "--gpu-memory-utilization",
-        str(args.gpu_memory_utilization),
-        "--max-model-len",
-        str(args.max_model_len),
-        "--graph-scratch-rows",
-        str(args.graph_scratch_rows),
-        "--source-layer-path",
-        str(args.source_layer_path),
-        "--target-layer-path",
-        str(args.target_layer_path),
-        "--side-hidden-dim",
-        str(args.side_hidden_dim),
-        "--side-lr",
-        str(args.side_lr),
-        "--distiller-beta",
-        str(getattr(args, "distiller_beta", 0.0)),
-        "--distiller-sampler-backend",
-        str(getattr(args, "distiller_sampler_backend", "post_filter_exact")),
-        "--consumer-implementation",
-        implementation,
-        "--model-bank-slots",
-        str(args.model_bank_slots),
-        "--model-bank-flush-interval",
-        str(args.model_bank_flush_interval),
-        "--model-bank-rank",
-        str(args.model_bank_rank),
-        "--model-bank-forward-backend",
-        str(getattr(args, "model_bank_forward_backend", "torch")),
-        "--model-bank-initializer",
-        str(args.model_bank_initializer),
-        "--model-bank-initializer-svd-method",
-        str(args.model_bank_initializer_svd_method),
-        "--model-bank-initializer-svd-ridge-lambda",
-        str(args.model_bank_initializer_svd_ridge_lambda),
-        "--model-bank-initializer-svd-min-rows",
-        str(args.model_bank_initializer_svd_min_rows),
-        "--model-bank-initializer-svd-max-wait-steps",
-        str(args.model_bank_initializer_svd_max_wait_steps),
-        "--benchmark-batch-size",
-        str(args.benchmark_batch_size),
-        "--benchmark-max-new-tokens",
-        str(args.benchmark_max_new_tokens),
-        "--benchmark-warmup-rounds",
-        str(args.benchmark_warmup_rounds),
-        "--benchmark-rounds",
-        str(args.benchmark_rounds),
-        "--sampling-n",
-        str(args.sampling_n),
-        "--sampling-temperature",
-        str(args.sampling_temperature),
-        "--sampling-top-p",
-        str(args.sampling_top_p),
-        "--sampling-top-k",
-        str(args.sampling_top_k),
-        "--sampling-min-p",
-        str(getattr(args, "sampling_min_p", 0.0)),
-        "--trajectory-topk",
-        str(args.trajectory_topk),
-        "--cooldown-s",
-        str(args.cooldown_s),
-        "--effective-batch-cap",
-        str(args.effective_batch_cap),
-        "--emit-json-summary",
-    ]
-    if getattr(args, "sampling_seed", None) is not None:
-        cmd.extend(["--sampling-seed", str(args.sampling_seed)])
-    if getattr(args, "seed_base", None) is not None:
-        cmd.extend(["--seed-base", str(args.seed_base)])
-    for prompt in getattr(args, "prompt", []):
-        cmd.extend(["--prompt", str(prompt)])
-    prompt_file = str(getattr(args, "prompt_file", "") or "")
-    if prompt_file:
-        cmd.extend(["--prompt-file", prompt_file])
-    _append_bool_flag(cmd, bool(args.enforce_eager), "--enforce-eager", "--no-enforce-eager")
-    _append_bool_flag(cmd, bool(getattr(args, "enable_distiller_intervention", False)), "--enable-distiller-intervention")
-    _append_bool_flag(cmd, bool(args.run_model_bank_case), "--run-model-bank-case", "--no-run-model-bank-case")
-    _append_bool_flag(
-        cmd,
-        bool(args.model_bank_use_output_layernorm),
-        "--model-bank-use-output-layernorm",
-        "--no-model-bank-use-output-layernorm",
-    )
-    _append_bool_flag(
-        cmd,
-        bool(args.model_bank_train_cudagraph),
-        "--model-bank-train-cudagraph",
-        "--no-model-bank-train-cudagraph",
-    )
-    if bool(args.benchmark_ignore_eos):
-        cmd.append("--benchmark-ignore-eos")
-    if bool(args.benchmark_disable_prefix_caching):
-        cmd.append("--benchmark-disable-prefix-caching")
-    if bool(getattr(args, "sampling_per_request_seed", False)):
-        cmd.append("--sampling-per-request-seed")
-    return cmd
 
 
 def _build_isolated_case_subprocess_cmd(
@@ -427,7 +258,7 @@ def _build_isolated_case_subprocess_cmd(
     cmd = [
         sys.executable,
         "-m",
-        "tllm.workflows.benchmarks.per_request_side_train_benchmark",
+        "tllm.workflows.benchmarks.per_request_esamp_benchmark",
         "--model-name",
         str(args.model_name),
         "--dtype",
@@ -442,10 +273,10 @@ def _build_isolated_case_subprocess_cmd(
         str(args.source_layer_path),
         "--target-layer-path",
         str(args.target_layer_path),
-        "--side-hidden-dim",
-        str(args.side_hidden_dim),
-        "--side-lr",
-        str(args.side_lr),
+        "--distiller-hidden-dim",
+        str(args.distiller_hidden_dim),
+        "--distiller-lr",
+        str(args.distiller_lr),
         "--distiller-beta",
         str(getattr(args, "distiller_beta", 0.0)),
         "--distiller-sampler-backend",
@@ -542,30 +373,6 @@ def _extract_json_summary(stdout: str) -> Dict[str, object]:
     raise ValueError("JSON summary marker not found in benchmark subprocess output")
 
 
-def _run_compare_consumer_implementations(args: argparse.Namespace) -> Dict[str, object]:
-    payloads: Dict[str, Dict[str, object]] = {}
-    for implementation in ("legacy", "base_consumer"):
-        completed = subprocess.run(
-            _build_subprocess_cmd(args, implementation),
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=str(Path(__file__).resolve().parents[3]),
-        )
-        if completed.stdout:
-            print(completed.stdout, end="")
-        if completed.stderr:
-            print(completed.stderr, end="", file=sys.stderr)
-        if completed.returncode != 0:
-            raise RuntimeError(f"benchmark subprocess failed for {implementation} with exit code {completed.returncode}")
-        payload = _extract_json_summary(completed.stdout or "")
-        payloads[implementation] = payload
-    return _build_compare_summary(
-        payloads["legacy"]["cases"],  # type: ignore[arg-type]
-        payloads["base_consumer"]["cases"],  # type: ignore[arg-type]
-    )
-
-
 def _run_isolated_case_subprocess(
     args: argparse.Namespace,
     *,
@@ -598,8 +405,8 @@ def _run_case(
     graph_scratch_rows: int,
     source_layer_path: str,
     target_layer_path: str,
-    side_hidden_dim: int,
-    side_lr: float,
+    distiller_hidden_dim: int,
+    distiller_lr: float,
     enable_distiller_intervention: bool,
     distiller_beta: float,
     distiller_sampler_backend: str,
@@ -626,9 +433,9 @@ def _run_case(
         tap_layer_paths=[source_layer_path, target_layer_path],
         source_layer_path=source_layer_path,
         target_layer_path=target_layer_path,
-        enable_side_train=bool(train_enabled),
-        side_hidden_dim=int(side_hidden_dim),
-        side_lr=float(side_lr),
+        enable_esamp_training=bool(train_enabled),
+        distiller_hidden_dim=int(distiller_hidden_dim),
+        distiller_lr=float(distiller_lr),
         enable_distiller_intervention=bool(enable_distiller_intervention),
         distiller_beta=float(distiller_beta),
         distiller_sampler_backend=str(distiller_sampler_backend),
@@ -642,10 +449,10 @@ def _run_case(
         model_bank_train_cudagraph=bool(model_bank_train_cudagraph),
         model_bank_forward_backend=str(model_bank_forward_backend),
     )
-    core.set_side_train_enabled(bool(train_enabled))
-    core.synchronize_side_train()
-    _ = core.read_and_reset_side_train_stats(sync=True)
-    _ = core.read_and_reset_side_train_per_request_stats(sync=True)
+    core.set_esamp_training_enabled(bool(train_enabled))
+    core.synchronize_esamp()
+    _ = core.read_and_reset_esamp_stats(sync=True)
+    _ = core.read_and_reset_esamp_per_request_stats(sync=True)
 
     prompt_list = list(prompts)
     param_list = list(params)
@@ -688,7 +495,7 @@ def _run_case(
 
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - start
-    stats = core.read_and_reset_side_train_stats(sync=True)
+    stats = core.read_and_reset_esamp_stats(sync=True)
     distiller_timing = core.read_and_reset_distiller_timing_stats(sync=True)
     model_bank_graph = core.read_graph_debug_stats(mode="model_bank")
 
@@ -756,8 +563,8 @@ def _configure_case_runtime(
     graph_scratch_rows: int,
     source_layer_path: str,
     target_layer_path: str,
-    side_hidden_dim: int,
-    side_lr: float,
+    distiller_hidden_dim: int,
+    distiller_lr: float,
     enable_distiller_intervention: bool,
     distiller_beta: float,
     distiller_sampler_backend: str,
@@ -777,9 +584,9 @@ def _configure_case_runtime(
         tap_layer_paths=[source_layer_path, target_layer_path],
         source_layer_path=source_layer_path,
         target_layer_path=target_layer_path,
-        enable_side_train=bool(train_enabled),
-        side_hidden_dim=int(side_hidden_dim),
-        side_lr=float(side_lr),
+        enable_esamp_training=bool(train_enabled),
+        distiller_hidden_dim=int(distiller_hidden_dim),
+        distiller_lr=float(distiller_lr),
         enable_distiller_intervention=bool(enable_distiller_intervention),
         distiller_beta=float(distiller_beta),
         distiller_sampler_backend=str(distiller_sampler_backend),
@@ -811,9 +618,9 @@ def _run_per_request_trajectory(
         tap_layer_paths=[args.source_layer_path, args.target_layer_path],
         source_layer_path=args.source_layer_path,
         target_layer_path=args.target_layer_path,
-        enable_side_train=True,
-        side_hidden_dim=int(args.side_hidden_dim),
-        side_lr=float(args.side_lr),
+        enable_esamp_training=True,
+        distiller_hidden_dim=int(args.distiller_hidden_dim),
+        distiller_lr=float(args.distiller_lr),
         per_request_models=True,
         per_request_model_bank=False,
         model_bank_slots=0,
@@ -829,8 +636,8 @@ def _run_per_request_trajectory(
     )
     history: Dict[int, List[float]] = {}
     counts: Dict[int, int] = {}
-    core.set_side_train_enabled(True)
-    _ = core.read_and_reset_side_train_per_request_stats(sync=True)
+    core.set_esamp_training_enabled(True)
+    _ = core.read_and_reset_esamp_per_request_stats(sync=True)
     prompt_list = list(prompts)
     param_list = list(params)
     cap = max(1, int(effective_batch_cap))
@@ -858,7 +665,7 @@ def _run_per_request_trajectory(
     round_summaries: List[Dict[str, float]] = []
     for round_i in range(int(args.benchmark_rounds)):
         _run_generate_chunked()
-        per_stats = core.read_and_reset_side_train_per_request_stats(sync=True)
+        per_stats = core.read_and_reset_esamp_per_request_stats(sync=True)
         active = len(per_stats)
         total_cnt = sum(s.loss_count for s in per_stats.values())
         mean_loss = (
@@ -959,8 +766,8 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
         graph_scratch_rows=int(rows),
         source_layer_path=args.source_layer_path,
         target_layer_path=args.target_layer_path,
-        side_hidden_dim=int(args.side_hidden_dim),
-        side_lr=float(args.side_lr),
+        distiller_hidden_dim=int(args.distiller_hidden_dim),
+        distiller_lr=float(args.distiller_lr),
         enable_distiller_intervention=bool(args.enable_distiller_intervention),
         distiller_beta=float(args.distiller_beta),
         distiller_sampler_backend=str(args.distiller_sampler_backend),
@@ -1032,9 +839,9 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
             tap_layer_paths=[args.source_layer_path, args.target_layer_path],
             source_layer_path=args.source_layer_path,
             target_layer_path=args.target_layer_path,
-            enable_side_train=True,
-            side_hidden_dim=int(args.side_hidden_dim),
-            side_lr=float(args.side_lr),
+            enable_esamp_training=True,
+            distiller_hidden_dim=int(args.distiller_hidden_dim),
+            distiller_lr=float(args.distiller_lr),
             enable_distiller_intervention=bool(args.enable_distiller_intervention),
             distiller_beta=float(args.distiller_beta),
             distiller_sampler_backend=str(args.distiller_sampler_backend),
@@ -1075,8 +882,8 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
                 graph_scratch_rows=common["graph_scratch_rows"],
                 source_layer_path=common["source_layer_path"],
                 target_layer_path=common["target_layer_path"],
-                side_hidden_dim=common["side_hidden_dim"],
-                side_lr=common["side_lr"],
+                distiller_hidden_dim=common["distiller_hidden_dim"],
+                distiller_lr=common["distiller_lr"],
                 enable_distiller_intervention=common["enable_distiller_intervention"],
                 distiller_beta=common["distiller_beta"],
                 distiller_sampler_backend=common["distiller_sampler_backend"],
@@ -1220,8 +1027,8 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
                 graph_scratch_rows=common["graph_scratch_rows"],
                 source_layer_path=common["source_layer_path"],
                 target_layer_path=common["target_layer_path"],
-                side_hidden_dim=common["side_hidden_dim"],
-                side_lr=common["side_lr"],
+                distiller_hidden_dim=common["distiller_hidden_dim"],
+                distiller_lr=common["distiller_lr"],
                 enable_distiller_intervention=common["enable_distiller_intervention"],
                 distiller_beta=common["distiller_beta"],
                 distiller_sampler_backend=common["distiller_sampler_backend"],

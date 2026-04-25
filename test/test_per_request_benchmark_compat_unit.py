@@ -9,7 +9,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from tllm.workflows.benchmarks import per_request_side_train_benchmark as bench
+from tllm.workflows.benchmarks import per_request_esamp_benchmark as bench
 
 
 class PerRequestBenchmarkCompatUnitTest(unittest.TestCase):
@@ -37,7 +37,7 @@ class PerRequestBenchmarkCompatUnitTest(unittest.TestCase):
         self.assertFalse(bench._requires_isolated_llm_cases(enable_distiller_intervention=False, distiller_beta=0.4))
 
     def test_cli_default_effective_batch_cap_is_auto(self) -> None:
-        with mock.patch.object(sys, "argv", ["per_request_side_train_benchmark"]):
+        with mock.patch.object(sys, "argv", ["per_request_esamp_benchmark"]):
             args = bench._parse_args()
         self.assertEqual(args.effective_batch_cap, 0)
         self.assertFalse(args.enable_distiller_intervention)
@@ -52,8 +52,8 @@ class PerRequestBenchmarkCompatUnitTest(unittest.TestCase):
             graph_scratch_rows=64,
             source_layer_path="a",
             target_layer_path="b",
-            side_hidden_dim=8,
-            side_lr=1e-3,
+            distiller_hidden_dim=8,
+            distiller_lr=1e-3,
             enable_distiller_intervention=True,
             distiller_beta=0.4,
             distiller_sampler_backend="pre_filter_dense",
@@ -88,115 +88,25 @@ class PerRequestBenchmarkCompatUnitTest(unittest.TestCase):
             benchmark_disable_prefix_caching=True,
         )
 
-        cmd = bench._build_subprocess_cmd(args, "esamp")
+        args.trajectory_step_interval = 1
+        args.trajectory_max_points = 16
+        args.sampling_per_request_seed = False
+
+        cmd = bench._build_isolated_case_subprocess_cmd(
+            args,
+            case_filter="model_bank_on",
+            skip_trajectory=True,
+        )
 
         self.assertIn("--enable-distiller-intervention", cmd)
         self.assertEqual(cmd[cmd.index("--distiller-beta") + 1], "0.4")
         self.assertEqual(cmd[cmd.index("--distiller-sampler-backend") + 1], "pre_filter_dense")
 
     def test_cli_no_longer_exposes_consumer_implementation_selector(self) -> None:
-        with mock.patch.object(sys, "argv", ["per_request_side_train_benchmark"]):
+        with mock.patch.object(sys, "argv", ["per_request_esamp_benchmark"]):
             args = bench._parse_args()
         self.assertFalse(hasattr(args, "consumer_implementation"))
         self.assertFalse(hasattr(args, "compare_consumer_implementations"))
-
-    def test_build_compare_summary_reports_case_ratios(self) -> None:
-        legacy = {
-            "single_on": {"out_tok_per_s": 100.0, "loss_avg": 1.0, "loss_count": 10},
-            "per_request_on": {"out_tok_per_s": 90.0, "loss_avg": 0.8, "loss_count": 20},
-            "model_bank_on": {"out_tok_per_s": 95.0, "loss_avg": 0.7, "loss_count": 30},
-        }
-        base_consumer = {
-            "single_on": {"out_tok_per_s": 99.0, "loss_avg": 1.01, "loss_count": 10},
-            "per_request_on": {"out_tok_per_s": 89.0, "loss_avg": 0.79, "loss_count": 20},
-            "model_bank_on": {"out_tok_per_s": 94.0, "loss_avg": 0.69, "loss_count": 27},
-        }
-
-        summary = bench._build_compare_summary(legacy, base_consumer)
-
-        self.assertAlmostEqual(summary["case_ratios"]["single_on"], 0.99)
-        self.assertAlmostEqual(summary["case_ratios"]["per_request_on"], 89.0 / 90.0)
-        self.assertAlmostEqual(summary["loss_deltas"]["single_on"], 0.01)
-        self.assertEqual(summary["loss_count_deltas"]["single_on"], 0.0)
-        self.assertEqual(summary["loss_count_deltas"]["model_bank_on"], -3.0)
-
-    def test_compare_mode_runs_each_implementation_in_subprocess(self) -> None:
-        args = SimpleNamespace(
-            model_name="Qwen/Qwen2.5-0.5B-Instruct",
-            prompt=["hello"],
-            prompt_file="",
-            dtype="bfloat16",
-            gpu_memory_utilization=0.5,
-            max_model_len=512,
-            enforce_eager=False,
-            graph_scratch_rows=0,
-            source_layer_path="model.model.layers[0].input_layernorm",
-            target_layer_path="model.model.layers[-1].input_layernorm",
-            side_hidden_dim=256,
-            side_lr=1e-3,
-            model_bank_slots=0,
-            model_bank_flush_interval=1,
-            model_bank_rank=16,
-            model_bank_use_output_layernorm=True,
-            model_bank_initializer="svd",
-            model_bank_initializer_svd_method="ffn_fast_svd",
-            model_bank_initializer_svd_ridge_lambda=1e-2,
-            model_bank_initializer_svd_min_rows=32,
-            model_bank_initializer_svd_max_wait_steps=4,
-            model_bank_train_cudagraph=True,
-            run_model_bank_case=True,
-            benchmark_batch_size=8,
-            benchmark_max_new_tokens=256,
-            benchmark_warmup_rounds=1,
-            benchmark_rounds=2,
-            benchmark_ignore_eos=True,
-            benchmark_disable_prefix_caching=True,
-            sampling_n=16,
-            sampling_temperature=0.8,
-            sampling_top_p=0.95,
-            sampling_top_k=-1,
-            sampling_seed=None,
-            sampling_per_request_seed=False,
-            seed_base=None,
-            trajectory_topk=1,
-            cooldown_s=0.5,
-            effective_batch_cap=0,
-            consumer_implementation="legacy",
-            compare_consumer_implementations=True,
-            emit_json_summary=False,
-        )
-        payloads = [
-            {
-                "implementation": "legacy",
-                "cases": {
-                    "single_on": {"out_tok_per_s": 100.0, "loss_avg": 1.0},
-                    "per_request_on": {"out_tok_per_s": 90.0, "loss_avg": 0.8},
-                    "model_bank_on": {"out_tok_per_s": 95.0, "loss_avg": 0.7},
-                },
-            },
-            {
-                "implementation": "base_consumer",
-                "cases": {
-                    "single_on": {"out_tok_per_s": 99.0, "loss_avg": 1.01},
-                    "per_request_on": {"out_tok_per_s": 89.0, "loss_avg": 0.79},
-                    "model_bank_on": {"out_tok_per_s": 94.0, "loss_avg": 0.69},
-                },
-            },
-        ]
-        completed = [
-            mock.Mock(returncode=0, stdout=f"logs\n{bench.JSON_SUMMARY_PREFIX}{json.dumps(payload)}\n", stderr="")
-            for payload in payloads
-        ]
-
-        with mock.patch.object(bench.subprocess, "run", side_effect=completed) as run_mock:
-            summary = bench._run_compare_consumer_implementations(args)
-
-        self.assertEqual(run_mock.call_count, 2)
-        first_cmd = run_mock.call_args_list[0].args[0]
-        second_cmd = run_mock.call_args_list[1].args[0]
-        self.assertEqual(first_cmd[first_cmd.index("--consumer-implementation") + 1], "legacy")
-        self.assertEqual(second_cmd[second_cmd.index("--consumer-implementation") + 1], "base_consumer")
-        self.assertAlmostEqual(summary["case_ratios"]["model_bank_on"], 94.0 / 95.0)
 
     def test_isolated_case_subprocess_disables_vllm_compile_cache(self) -> None:
         args = SimpleNamespace(
@@ -207,8 +117,8 @@ class PerRequestBenchmarkCompatUnitTest(unittest.TestCase):
             graph_scratch_rows=64,
             source_layer_path="a",
             target_layer_path="b",
-            side_hidden_dim=8,
-            side_lr=1e-3,
+            distiller_hidden_dim=8,
+            distiller_lr=1e-3,
             enable_distiller_intervention=True,
             distiller_beta=0.4,
             distiller_sampler_backend="pre_filter_dense",
@@ -269,8 +179,8 @@ class PerRequestBenchmarkCompatUnitTest(unittest.TestCase):
             graph_scratch_rows=0,
             source_layer_path="model.model.layers[0].input_layernorm",
             target_layer_path="model.model.layers[-1].input_layernorm",
-            side_hidden_dim=256,
-            side_lr=1e-3,
+            distiller_hidden_dim=256,
+            distiller_lr=1e-3,
             enable_distiller_intervention=True,
             distiller_beta=0.1,
             distiller_sampler_backend="pre_filter_dense",
@@ -335,8 +245,8 @@ class PerRequestBenchmarkCompatUnitTest(unittest.TestCase):
         args = SimpleNamespace(
             source_layer_path="a",
             target_layer_path="b",
-            side_hidden_dim=8,
-            side_lr=1e-3,
+            distiller_hidden_dim=8,
+            distiller_lr=1e-3,
             model_bank_rank=4,
             model_bank_use_output_layernorm=True,
             model_bank_initializer="svd",
@@ -352,16 +262,16 @@ class PerRequestBenchmarkCompatUnitTest(unittest.TestCase):
             trajectory_max_points=16,
         )
         per_stats = {
-            3: bench.core.SideTrainStats(loss_avg=2.0, loss_count=3, trace_losses=(3.0, 2.0, 1.0)),
-            8: bench.core.SideTrainStats(loss_avg=5.0, loss_count=1, trace_losses=(5.0,)),
+            3: bench.core.ESampStats(loss_avg=2.0, loss_count=3, trace_losses=(3.0, 2.0, 1.0)),
+            8: bench.core.ESampStats(loss_avg=5.0, loss_count=1, trace_losses=(5.0,)),
         }
 
         with mock.patch.object(bench.esamp_workflow_support, "configure_esamp_runtime"), mock.patch.object(
             bench.esamp_workflow_support, "run_generate_with_request_mapping"
         ), mock.patch.object(
-            bench.core, "set_side_train_enabled"
+            bench.core, "set_esamp_training_enabled"
         ), mock.patch.object(
-            bench.core, "read_and_reset_side_train_per_request_stats", side_effect=[{}, per_stats]
+            bench.core, "read_and_reset_esamp_per_request_stats", side_effect=[{}, per_stats]
         ):
             summary = bench._run_per_request_trajectory(
                 args=args,

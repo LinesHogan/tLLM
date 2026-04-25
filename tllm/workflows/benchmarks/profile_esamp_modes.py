@@ -23,7 +23,7 @@ from tllm.workflows.common import (
 )
 from tllm.runtime import residual_runtime as core
 from tllm.runtime.sampler_bridge.types import SAMPLER_BACKEND_CHOICES
-from tllm.workflows import side_train_support as esamp_workflow_support
+from tllm.workflows import esamp_support as esamp_workflow_support
 from tllm.util.tools import shutdown_llm_instance
 from tllm.util.tools import build_prompt_batch, read_prompts
 
@@ -51,9 +51,9 @@ class ModeResult:
     total_completions: int
     trace_path: str
     top_ops: List[Dict[str, float]]
-    side_train_cuda_ms: float
+    esamp_cuda_ms: float
     bank_cuda_ms: float
-    side_train_cpu_ms: float
+    esamp_cpu_ms: float
     bank_cpu_ms: float
     top_metric: str
 
@@ -71,8 +71,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--graph-scratch-rows", type=int, default=0)
     p.add_argument("--source-layer-path", type=str, default="model.model.layers[0].input_layernorm")
     p.add_argument("--target-layer-path", type=str, default="model.model.layers[-1].input_layernorm")
-    p.add_argument("--side-hidden-dim", type=int, default=256)
-    p.add_argument("--side-lr", type=float, default=1e-3)
+    p.add_argument("--distiller-hidden-dim", type=int, default=256)
+    p.add_argument("--distiller-lr", type=float, default=1e-3)
     p.add_argument("--enable-distiller-intervention", action="store_true")
     p.add_argument("--distiller-beta", type=float, default=0.0)
     p.add_argument(
@@ -129,12 +129,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--report-md",
         type=str,
-        default="tLLM/doc/PROFILE_side_train_model_bank.md",
+        default="tLLM/doc/PROFILE_esamp_model_bank.md",
     )
     p.add_argument(
         "--raw-json",
         type=str,
-        default="tLLM/outputs/profile_traces/profile_side_train_raw.json",
+        default="tLLM/outputs/profile_traces/profile_esamp_raw.json",
     )
     p.add_argument("--cooldown-s", type=float, default=1.0)
     p.set_defaults(enforce_eager=False)
@@ -190,15 +190,15 @@ def _collect_top_ops(rows: List[Dict[str, float]], top_k: int, metric: str) -> L
     return sorted(rows, key=lambda r: float(r.get(metric, 0.0)), reverse=True)[: max(1, int(top_k))]
 
 
-def _aggregate_side_train_time(rows: List[Dict[str, float]], metric: str) -> tuple[float, float]:
+def _aggregate_esamp_time(rows: List[Dict[str, float]], metric: str) -> tuple[float, float]:
     side_total = 0.0
     bank_total = 0.0
     for op in rows:
         key = op["key"]
         val = float(op.get(metric, 0.0))
-        if key.startswith("side_train."):
+        if key.startswith("esamp."):
             side_total += val
-        if key.startswith("side_train.bank"):
+        if key.startswith("esamp.bank"):
             bank_total += val
     return side_total, bank_total
 
@@ -218,9 +218,9 @@ def _profile_one_mode(
         tap_layer_paths=[args.source_layer_path, args.target_layer_path],
         source_layer_path=args.source_layer_path,
         target_layer_path=args.target_layer_path,
-        enable_side_train=bool(mode.train_enabled),
-        side_hidden_dim=int(args.side_hidden_dim),
-        side_lr=float(args.side_lr),
+        enable_esamp_training=bool(mode.train_enabled),
+        distiller_hidden_dim=int(args.distiller_hidden_dim),
+        distiller_lr=float(args.distiller_lr),
         enable_distiller_intervention=bool(args.enable_distiller_intervention),
         distiller_beta=float(args.distiller_beta),
         distiller_sampler_backend=str(args.distiller_sampler_backend),
@@ -233,10 +233,10 @@ def _profile_one_mode(
         model_bank_initializer=_build_model_bank_initializer_config(args),
         model_bank_train_cudagraph=bool(args.model_bank_train_cudagraph),
     )
-    core.set_side_train_enabled(bool(mode.train_enabled))
-    core.synchronize_side_train()
-    _ = core.read_and_reset_side_train_stats(sync=True)
-    _ = core.read_and_reset_side_train_per_request_stats(sync=True)
+    core.set_esamp_training_enabled(bool(mode.train_enabled))
+    core.synchronize_esamp()
+    _ = core.read_and_reset_esamp_stats(sync=True)
+    _ = core.read_and_reset_esamp_per_request_stats(sync=True)
 
     for _ in range(int(args.warmup_rounds)):
         esamp_workflow_support.run_generate_with_request_mapping(llm, list(prompts), list(params))
@@ -270,12 +270,12 @@ def _profile_one_mode(
         elapsed = time.perf_counter() - start
     prof.export_chrome_trace(trace_path)
 
-    stats = core.read_and_reset_side_train_stats(sync=True)
+    stats = core.read_and_reset_esamp_stats(sync=True)
     all_rows = _collect_all_op_rows(prof)
     top_metric = _pick_top_metric(all_rows)
     top_ops = _collect_top_ops(all_rows, int(args.top_k_ops), top_metric)
-    side_train_cuda_ms, bank_cuda_ms = _aggregate_side_train_time(all_rows, "self_cuda_ms")
-    side_train_cpu_ms, bank_cpu_ms = _aggregate_side_train_time(all_rows, "self_cpu_ms")
+    esamp_cuda_ms, bank_cuda_ms = _aggregate_esamp_time(all_rows, "self_cuda_ms")
+    esamp_cpu_ms, bank_cpu_ms = _aggregate_esamp_time(all_rows, "self_cpu_ms")
 
     peak_mem_gb = 0.0
     if torch.cuda.is_available():
@@ -298,9 +298,9 @@ def _profile_one_mode(
         total_completions=int(total_completions),
         trace_path=trace_path,
         top_ops=top_ops,
-        side_train_cuda_ms=side_train_cuda_ms,
+        esamp_cuda_ms=esamp_cuda_ms,
         bank_cuda_ms=bank_cuda_ms,
-        side_train_cpu_ms=side_train_cpu_ms,
+        esamp_cpu_ms=esamp_cpu_ms,
         bank_cpu_ms=bank_cpu_ms,
         top_metric=top_metric,
     )
@@ -343,17 +343,17 @@ def _write_report(
     lines.append("")
     lines.append("## Side-Train Time Attribution (Profiler Self CUDA Time)")
     lines.append("")
-    lines.append("| mode | side_train total ms | bank-only ms |")
+    lines.append("| mode | esamp total ms | bank-only ms |")
     lines.append("| --- | ---: | ---: |")
     for r in results:
-        lines.append(f"| `{r.name}` | {r.side_train_cuda_ms:.3f} | {r.bank_cuda_ms:.3f} |")
+        lines.append(f"| `{r.name}` | {r.esamp_cuda_ms:.3f} | {r.bank_cuda_ms:.3f} |")
     lines.append("")
     lines.append("## Side-Train Time Attribution (Profiler Self CPU Time)")
     lines.append("")
-    lines.append("| mode | side_train total ms | bank-only ms |")
+    lines.append("| mode | esamp total ms | bank-only ms |")
     lines.append("| --- | ---: | ---: |")
     for r in results:
-        lines.append(f"| `{r.name}` | {r.side_train_cpu_ms:.3f} | {r.bank_cpu_ms:.3f} |")
+        lines.append(f"| `{r.name}` | {r.esamp_cpu_ms:.3f} | {r.bank_cpu_ms:.3f} |")
     lines.append("")
     lines.append("## Top Ops Per Mode")
     lines.append("")
@@ -390,7 +390,7 @@ def _write_report(
             f"for the sampled profile window."
         )
         lines.append(
-            "- If bank mode is slower while `side_train.bank_*` time is high, likely bottlenecks are "
+            "- If bank mode is slower while `esamp.bank_*` time is high, likely bottlenecks are "
             "`index_select`/`bmm` materialization and optimizer step overhead."
         )
     lines.append("")
@@ -476,9 +476,9 @@ def main() -> int:
                 "total_completions": r.total_completions,
                 "trace_path": r.trace_path,
                 "top_ops": r.top_ops,
-                "side_train_cuda_ms": r.side_train_cuda_ms,
+                "esamp_cuda_ms": r.esamp_cuda_ms,
                 "bank_cuda_ms": r.bank_cuda_ms,
-                "side_train_cpu_ms": r.side_train_cpu_ms,
+                "esamp_cpu_ms": r.esamp_cpu_ms,
                 "bank_cpu_ms": r.bank_cpu_ms,
                 "top_metric": r.top_metric,
             }

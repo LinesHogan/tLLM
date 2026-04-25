@@ -5,12 +5,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
-import sys
 from typing import Dict, List
 
 from tllm.runtime import residual_runtime as core
-from tllm.workflows import side_train_support as esamp_workflow_support
+from tllm.workflows import esamp_support as esamp_workflow_support
 from tllm.util.tools import build_prompt_batch, print_gpu_mem, read_prompts, shutdown_llm_instance
 
 ESAMP_MIN_OUT_TOK_RATIO = 0.95
@@ -38,8 +36,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--source-layer-path", type=str, default="model.model.layers[0].input_layernorm")
     parser.add_argument("--target-layer-path", type=str, default="model.model.layers[-1].input_layernorm")
 
-    parser.add_argument("--side-hidden-dim", type=int, default=256)
-    parser.add_argument("--side-lr", type=float, default=1e-3)
+    parser.add_argument("--distiller-hidden-dim", type=int, default=256)
+    parser.add_argument("--distiller-lr", type=float, default=1e-3)
     parser.add_argument("--benchmark-batch-size", type=int, default=64)
     parser.add_argument("--benchmark-max-new-tokens", type=int, default=128)
     parser.add_argument("--benchmark-warmup-rounds", type=int, default=1)
@@ -82,120 +80,6 @@ def _average_results(results: List[Dict[str, float]]) -> Dict[str, float]:
     return {k: sum(r.get(k, 0.0) for r in results) / n for k in keys}
 
 
-def _compute_esamp_ratio(legacy_with_train: Dict[str, float], base_consumer_with_train: Dict[str, float]) -> float:
-    legacy_tok = float(legacy_with_train.get("out_tok_per_s", 0.0) or 0.0)
-    if legacy_tok <= 0:
-        return 0.0
-    return float(base_consumer_with_train.get("out_tok_per_s", 0.0) or 0.0) / legacy_tok
-
-
-def _build_comparison_summary(
-    legacy_summary: Dict[str, Dict[str, float]],
-    base_consumer_summary: Dict[str, Dict[str, float]],
-) -> Dict[str, object]:
-    ratio = _compute_esamp_ratio(legacy_summary["with_train"], base_consumer_summary["with_train"])
-    return {
-        "legacy": legacy_summary,
-        "base_consumer": base_consumer_summary,
-        "ratio": ratio,
-        "min_ratio": ESAMP_MIN_OUT_TOK_RATIO,
-        "passed": bool(ratio >= ESAMP_MIN_OUT_TOK_RATIO),
-    }
-
-
-def _append_bool_flag(cmd: List[str], enabled: bool, positive_flag: str, negative_flag: str | None = None) -> None:
-    if enabled:
-        cmd.append(positive_flag)
-    elif negative_flag is not None:
-        cmd.append(negative_flag)
-
-
-def _build_subprocess_cmd(args: argparse.Namespace, implementation: str) -> List[str]:
-    cmd = [
-        sys.executable,
-        "-m",
-        "tllm.workflows.benchmarks.side_train_benchmark",
-        "--model-name",
-        str(args.model_name),
-        "--dtype",
-        str(args.dtype),
-        "--gpu-memory-utilization",
-        str(args.gpu_memory_utilization),
-        "--max-model-len",
-        str(args.max_model_len),
-        "--graph-scratch-rows",
-        str(args.graph_scratch_rows),
-        "--source-layer-path",
-        str(args.source_layer_path),
-        "--target-layer-path",
-        str(args.target_layer_path),
-        "--side-hidden-dim",
-        str(args.side_hidden_dim),
-        "--side-lr",
-        str(args.side_lr),
-        "--consumer-implementation",
-        implementation,
-        "--benchmark-batch-size",
-        str(args.benchmark_batch_size),
-        "--benchmark-max-new-tokens",
-        str(args.benchmark_max_new_tokens),
-        "--benchmark-warmup-rounds",
-        str(args.benchmark_warmup_rounds),
-        "--benchmark-rounds",
-        str(args.benchmark_rounds),
-        "--benchmark-case-cooldown-s",
-        str(args.benchmark_case_cooldown_s),
-        "--emit-json-summary",
-    ]
-    for prompt in getattr(args, "prompt", []):
-        cmd.extend(["--prompt", str(prompt)])
-    prompt_file = str(getattr(args, "prompt_file", "") or "")
-    if prompt_file:
-        cmd.extend(["--prompt-file", prompt_file])
-    for path in getattr(args, "tap_layer_path", []):
-        cmd.extend(["--tap-layer-path", str(path)])
-    _append_bool_flag(cmd, bool(args.enforce_eager), "--enforce-eager", "--no-enforce-eager")
-    _append_bool_flag(cmd, bool(args.benchmark_bidirectional), "--benchmark-bidirectional", "--no-benchmark-bidirectional")
-    _append_bool_flag(cmd, bool(args.benchmark_ignore_eos), "--benchmark-ignore-eos", "--no-benchmark-ignore-eos")
-    _append_bool_flag(
-        cmd,
-        bool(args.benchmark_disable_prefix_caching),
-        "--benchmark-disable-prefix-caching",
-        "--no-benchmark-disable-prefix-caching",
-    )
-    if bool(args.benchmark_log_memory):
-        cmd.append("--benchmark-log-memory")
-    return cmd
-
-
-def _extract_json_summary(stdout: str) -> Dict[str, object]:
-    for line in reversed(stdout.splitlines()):
-        if line.startswith(JSON_SUMMARY_PREFIX):
-            return json.loads(line[len(JSON_SUMMARY_PREFIX) :])
-    raise ValueError("JSON summary marker not found in benchmark subprocess output")
-
-
-def _run_compare_consumer_implementations(args: argparse.Namespace) -> Dict[str, object]:
-    results: Dict[str, Dict[str, float]] = {}
-    for implementation in ("legacy", "base_consumer"):
-        completed = subprocess.run(
-            _build_subprocess_cmd(args, implementation),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.stdout:
-            print(completed.stdout, end="")
-        if completed.stderr:
-            print(completed.stderr, end="", file=sys.stderr)
-        if completed.returncode != 0:
-            raise RuntimeError(f"benchmark subprocess failed for {implementation} with exit code {completed.returncode}")
-        payload = _extract_json_summary(completed.stdout or "")
-        results[implementation] = payload["summary"]
-
-    return _build_comparison_summary(results["legacy"], results["base_consumer"])
-
-
 def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Dict[str, Dict[str, float]]:
     prompts = read_prompts(args.prompt_file, args.prompt)
     bench_prompts = build_prompt_batch(prompts, int(args.benchmark_batch_size))
@@ -213,9 +97,9 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
         tap_layer_paths=tap_paths,
         source_layer_path=args.source_layer_path,
         target_layer_path=args.target_layer_path,
-        enable_side_train=True,
-        side_hidden_dim=int(args.side_hidden_dim),
-        side_lr=float(args.side_lr),
+        enable_esamp_training=True,
+        distiller_hidden_dim=int(args.distiller_hidden_dim),
+        distiller_lr=float(args.distiller_lr),
     )
 
     if args.benchmark_log_memory:
@@ -243,7 +127,7 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
             order_str = " -> ".join("train_on" if x else "train_off" for x in order)
             print(f"[{implementation}] Pass {pass_i + 1}/{len(orders)} order={order_str}")
             for train_enabled in order:
-                result = esamp_workflow_support.run_side_train_throughput_case(
+                result = esamp_workflow_support.run_esamp_throughput_case(
                     llm=llm,
                     prompts=bench_prompts,
                     max_new_tokens=int(args.benchmark_max_new_tokens),

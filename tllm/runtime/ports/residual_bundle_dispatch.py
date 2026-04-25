@@ -19,7 +19,7 @@ from tllm.runtime.ports.residual_bindings import ResidualPathBinding
 from tllm.runtime.decode_runtime_metadata import active_request_prompt_sample_metadata
 from tllm.runtime.ports import residual_bindings as _residual_bindings
 from tllm.runtime.vllm_patch import common_hooks as _common_hooks
-from tllm.runtime.legacy_consumer_compat import apply_feedback as apply_consumer_feedback
+from tllm.runtime.consumer_compat import apply_feedback as apply_consumer_feedback
 from tllm.contracts.runtime_context import RunnerLike
 
 

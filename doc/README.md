@@ -51,7 +51,8 @@ Start here if you want to read hidden states, export activations, add a new side
 1. [Installation](getting-started/installation.md)
 2. [Architecture](developer-guides/architecture.md)
 3. [Write Your First Consumer](getting-started/write-your-first-consumer.md)
-4. [Debugging Consumers](developer-guides/debugging.md)
+4. [Validation](developer-guides/validation.md)
+5. [Debugging Consumers](developer-guides/debugging.md)
 
 ### 3. You Want To Change tLLM Itself
 

@@ -11,7 +11,7 @@ from tllm.common.path_resolution import candidate_capture_paths
 from tllm.common.state import resolve_object_by_path
 from tllm.consumers.base import BaseConsumer
 from tllm.consumers.esamp.config import ESampConsumerConfig
-from tllm.consumers.esamp.engine import ESampTrainEngine, SideTrainStats
+from tllm.consumers.esamp.engine import ESampTrainEngine, ESampStats
 from tllm.consumers.esamp.initializers.svd import build_model_bank_initializer
 from tllm.consumers.esamp.sampler_provider import ESampSamplerModifierProvider
 from tllm.contracts.port_bundle import PortBundle
@@ -27,9 +27,9 @@ class ESampConsumer(BaseConsumer):
     @staticmethod
     def _build_engine(config: ESampConsumerConfig) -> ESampTrainEngine:
         return ESampTrainEngine(
-            hidden_dim=int(config.side_hidden_dim),
-            lr=float(config.side_lr),
-            enabled=bool(config.enable_side_train),
+            hidden_dim=int(config.distiller_hidden_dim),
+            lr=float(config.distiller_lr),
+            enabled=bool(config.enable_esamp_training),
             per_request_models=bool(config.per_request_models),
             per_request_model_bank=bool(config.per_request_model_bank),
             model_bank_slots=int(config.model_bank_slots),
@@ -64,7 +64,7 @@ class ESampConsumer(BaseConsumer):
         return self.config.consumer_id
 
     def flows(self) -> Sequence[ConsumerFlow]:
-        if not bool(self.config.enable_side_train):
+        if not bool(self.config.enable_esamp_training):
             return ()
         return [
             ConsumerFlow(
@@ -268,13 +268,13 @@ class ESampConsumer(BaseConsumer):
         self._last_prompt_idxs = []
 
     def set_enabled(self, enabled: bool) -> None:
-        self.config.enable_side_train = bool(enabled)
+        self.config.enable_esamp_training = bool(enabled)
         self._engine.set_enabled(bool(enabled))
 
     def synchronize(self) -> None:
         self._engine.synchronize()
 
-    def read_and_reset_stats(self, sync: bool = True) -> SideTrainStats:
+    def read_and_reset_stats(self, sync: bool = True) -> ESampStats:
         return self._engine.read_and_reset_stats(sync=sync)
 
     def read_and_reset_per_request_stats(self, sync: bool = True):

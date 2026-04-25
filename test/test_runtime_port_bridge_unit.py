@@ -605,8 +605,8 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 "source_layer_path": "model.model.layers[0].input_layernorm",
                 "target_layer_path": "model.model.layers[-1].input_layernorm",
                 "graph_scratch_rows": 8,
-                "side_hidden_dim": 8,
-                "side_lr": 1e-3,
+                "distiller_hidden_dim": 8,
+                "distiller_lr": 1e-3,
                 "per_request_models": False,
                 "per_request_model_bank": False,
                 "model_bank_slots": 0,
@@ -615,7 +615,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 "model_bank_use_output_layernorm": True,
                 "model_bank_initializer": None,
                 "model_bank_train_cudagraph": False,
-                "enable_side_train": False,
+                "enable_esamp_training": False,
             },
         )()
         runtime.decode_row_idx = None
@@ -633,8 +633,8 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
             (),
             {
                 "RUNTIME": runtime,
-                "MODEL_HOOK_FLAG": "side_train_hook_installed",
-                "MODEL_HOOK_SPEC_ATTR": "side_train_hook_spec",
+                "MODEL_HOOK_FLAG": "esamp_hook_installed",
+                "MODEL_HOOK_SPEC_ATTR": "esamp_hook_spec",
                 "_resolve_module_by_path_with_fallback": staticmethod(esamp_runtime.resolve_module_by_path_with_fallback),
                 "_infer_hidden_dtype": staticmethod(lambda layer: torch.float32),
                 "_runner_uses_compilation_or_cudagraph": staticmethod(lambda runner: False),
@@ -666,8 +666,8 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 "source_layer_path": "model.model.layers[0].input_layernorm",
                 "target_layer_path": "model.model.layers[-1].input_layernorm",
                 "graph_scratch_rows": 8,
-                "side_hidden_dim": 8,
-                "side_lr": 1e-3,
+                "distiller_hidden_dim": 8,
+                "distiller_lr": 1e-3,
                 "per_request_models": False,
                 "per_request_model_bank": False,
                 "model_bank_slots": 0,
@@ -676,7 +676,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 "model_bank_use_output_layernorm": True,
                 "model_bank_initializer": None,
                 "model_bank_train_cudagraph": False,
-                "enable_side_train": False,
+                "enable_esamp_training": False,
             },
         )()
         runtime.residual_raw_paths = {}
@@ -696,8 +696,8 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
             (),
             {
                 "RUNTIME": runtime,
-                "MODEL_HOOK_FLAG": "side_train_hook_installed",
-                "MODEL_HOOK_SPEC_ATTR": "side_train_hook_spec",
+                "MODEL_HOOK_FLAG": "esamp_hook_installed",
+                "MODEL_HOOK_SPEC_ATTR": "esamp_hook_spec",
                 "_resolve_module_by_path_with_fallback": staticmethod(esamp_runtime.resolve_module_by_path_with_fallback),
                 "_infer_hidden_dtype": staticmethod(lambda layer: torch.float32),
                 "_runner_uses_compilation_or_cudagraph": staticmethod(lambda runner: False),
@@ -713,8 +713,8 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
 
     def test_setup_runtime_hooks_if_active_does_not_reensure_resources_when_hooks_already_installed(self) -> None:
         model = type("Model", (), {})()
-        setattr(model, "side_train_hook_installed", True)
-        setattr(model, "side_train_hook_spec", ("hook",))
+        setattr(model, "esamp_hook_installed", True)
+        setattr(model, "esamp_hook_spec", ("hook",))
         setattr(model, "_tllm_compute_logits_wrapped", True)
         consumer = mock.Mock()
         runtime = type("Runtime", (), {})()
@@ -726,8 +726,8 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 "source_layer_path": "model.model.layers[0].input_layernorm",
                 "target_layer_path": "model.model.layers[-1].input_layernorm",
                 "graph_scratch_rows": 8,
-                "side_hidden_dim": 8,
-                "side_lr": 1e-3,
+                "distiller_hidden_dim": 8,
+                "distiller_lr": 1e-3,
                 "per_request_models": False,
                 "per_request_model_bank": False,
                 "model_bank_slots": 0,
@@ -736,7 +736,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 "model_bank_use_output_layernorm": True,
                 "model_bank_initializer": None,
                 "model_bank_train_cudagraph": False,
-                "enable_side_train": False,
+                "enable_esamp_training": False,
             },
         )()
         runtime.launch_consumer_from_hooks = True
@@ -747,8 +747,8 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
             (),
             {
                 "RUNTIME": runtime,
-                "MODEL_HOOK_FLAG": "side_train_hook_installed",
-                "MODEL_HOOK_SPEC_ATTR": "side_train_hook_spec",
+                "MODEL_HOOK_FLAG": "esamp_hook_installed",
+                "MODEL_HOOK_SPEC_ATTR": "esamp_hook_spec",
                 "_runner_uses_compilation_or_cudagraph": staticmethod(lambda runner: True),
             },
         )()

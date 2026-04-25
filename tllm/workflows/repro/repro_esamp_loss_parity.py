@@ -47,13 +47,13 @@ def _build_result_summary(
 
 
 def _parse_args():
-    from tllm.workflows.benchmarks import per_request_side_train_benchmark as benchmark
+    from tllm.workflows.benchmarks import per_request_esamp_benchmark as benchmark
 
     return benchmark._parse_args()
 
 
 def _run_aligned_single_path(args) -> Dict[str, object]:
-    from tllm.workflows.benchmarks import per_request_side_train_benchmark as benchmark
+    from tllm.workflows.benchmarks import per_request_esamp_benchmark as benchmark
 
     _ = _runtime.RUNTIME
     if getattr(args, "sampling_seed", None) is None:

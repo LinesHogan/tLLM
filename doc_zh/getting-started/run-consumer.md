@@ -52,17 +52,17 @@ python starter.py --max-new-tokens 32
 
 ### 关键代码结构
 
-打开 `starter.py`，核心结构如下。这里没有直接手写 `ESampConsumer(...)` 和 runtime 注册逻辑，而是走 `side_train_support.configure_esamp_runtime(...)`。这样做的好处是：ESamp 的配置、runtime 状态、sampler provider、request mapping 都由同一个入口处理，示例代码不会和 tLLM 内部实现绑得太死。
+打开 `starter.py`，核心结构如下。这里没有直接手写 `ESampConsumer(...)` 和 runtime 注册逻辑，而是走 `esamp_support.configure_esamp_runtime(...)`。这样做的好处是：ESamp 的配置、runtime 状态、sampler provider、request mapping 都由同一个入口处理，示例代码不会和 tLLM 内部实现绑得太死。
 
 ```python
 from vllm import SamplingParams
 
 from tllm.runtime import residual_runtime as runtime
 from tllm.util.tools import make_llm
-from tllm.workflows import side_train_support
+from tllm.workflows import esamp_support
 
 # 1. 配置 ESamp，并把 consumer 交给 runtime
-consumer = side_train_support.configure_esamp_runtime(
+consumer = esamp_support.configure_esamp_runtime(
     graph_scratch_rows=64,
     tap_layer_paths=[
         "model.model.layers[0].input_layernorm",
@@ -70,9 +70,9 @@ consumer = side_train_support.configure_esamp_runtime(
     ],
     source_layer_path="model.model.layers[0].input_layernorm",
     target_layer_path="model.model.layers[-1].input_layernorm",
-    enable_side_train=True,
-    side_hidden_dim=128,
-    side_lr=1e-3,
+    enable_esamp_training=True,
+    distiller_hidden_dim=128,
+    distiller_lr=1e-3,
     per_request_model_bank=True,
     model_bank_slots=16,
     model_bank_rank=64,
@@ -100,7 +100,7 @@ params = [
     for i in range(16)
 ]
 
-outputs = side_train_support.run_generate_with_request_mapping(
+outputs = esamp_support.run_generate_with_request_mapping(
     llm,
     prompts,
     params,
@@ -109,8 +109,8 @@ outputs = side_train_support.run_generate_with_request_mapping(
 )
 
 # 4. 排空 side-train 队列，读取统计
-runtime.synchronize_side_train()
-stats = runtime.read_and_reset_side_train_stats(sync=True)
+runtime.synchronize_esamp()
+stats = runtime.read_and_reset_esamp_stats(sync=True)
 print(stats)
 ```
 
@@ -122,7 +122,7 @@ print(stats)
 
 ```bash
 VLLM_USE_FLASHINFER_SAMPLER=1 \
-python -m tllm.workflows.benchmarks.per_request_side_train_benchmark \
+python -m tllm.workflows.benchmarks.per_request_esamp_benchmark \
   --emit-json-summary \
   --model-name Qwen/Qwen2.5-0.5B-Instruct \
   --dtype bfloat16 \
@@ -138,7 +138,7 @@ python -m tllm.workflows.benchmarks.per_request_side_train_benchmark \
   --sampling-temperature 0.8 \
   --sampling-top-p 0.95 \
   --sampling-top-k -1 \
-  --side-lr 1e-3 \
+  --distiller-lr 1e-3 \
   --model-bank-flush-interval 1 \
   --model-bank-init-method ffn_fast_svd \
   --trajectory-topk 1 \
@@ -181,7 +181,7 @@ python -m tllm.workflows.benchmarks.per_request_side_train_benchmark \
 **Side-train 配置**
 | 参数 | 值 | 为什么这样设 |
 |------|-----|-------------|
-| `--side-lr` | `1e-3` | side model 的学习率。这个值对收敛速度影响大，但不是吞吐的主要瓶颈 |
+| `--distiller-lr` | `1e-3` | side model 的学习率。这个值对收敛速度影响大，但不是吞吐的主要瓶颈 |
 | `--model-bank-flush-interval` | `1` | 每 1 个 step flush 一次。interval 越大吞吐越高（减少 optimizer step 频率），但 loss 可能变差 |
 | `--model-bank-init-method` | `ffn_fast_svd` | Qwen 模型推荐的初始化方式。不同模型结构可能需要换别的 |
 | `--trajectory-topk` | `1` | 每个 step 只保留 top-1 轨迹用于训练 |

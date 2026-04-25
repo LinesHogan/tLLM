@@ -42,24 +42,44 @@ class MigrationFinalizationUnitTest(unittest.TestCase):
         self.assertFalse((REPO_ROOT / "tllm" / "runtime" / "esamp_runtime.py").exists())
         self.assertTrue((REPO_ROOT / "tllm" / "runtime" / "residual_runtime.py").is_file())
 
+    def test_runtime_package_no_longer_uses_legacy_named_modules(self) -> None:
+        self.assertFalse((REPO_ROOT / "tllm" / "legacy").exists())
+        self.assertFalse((REPO_ROOT / "tllm" / "runtime" / "legacy_consumer_compat.py").exists())
+        self.assertFalse((REPO_ROOT / "tllm" / "runtime" / "legacy_event_bridge.py").exists())
+        self.assertFalse((REPO_ROOT / "tllm" / "runtime" / "sampler_bridge" / "legacy").exists())
+        self.assertTrue((REPO_ROOT / "tllm" / "runtime" / "consumer_compat.py").is_file())
+        self.assertTrue((REPO_ROOT / "tllm" / "runtime" / "hidden_event_bridge.py").is_file())
+
+    def test_public_esamp_api_no_longer_uses_side_train_names(self) -> None:
+        support_text = (REPO_ROOT / "tllm" / "workflows" / "esamp_support.py").read_text(encoding="utf-8")
+        config_text = (REPO_ROOT / "tllm" / "consumers" / "esamp" / "config.py").read_text(encoding="utf-8")
+        readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("def run_esamp_throughput_case", support_text)
+        self.assertNotIn("def run_side_train_throughput_case", support_text)
+        self.assertIn("enable_esamp_training", config_text)
+        self.assertNotIn("enable_side_train", config_text)
+        self.assertIn("configure_esamp_runtime()", readme_text)
+        self.assertIn("llm.generate", readme_text)
+
     def test_port_runtime_hooks_no_longer_own_benchmark_request_mapping_helpers(self) -> None:
         hooks_text = (REPO_ROOT / "tllm" / "runtime" / "vllm_patch" / "port_runtime_hooks.py").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("def run_generate_with_request_mapping", hooks_text)
-        self.assertNotIn("def run_side_train_throughput_case", hooks_text)
+        self.assertNotIn("def run_esamp_throughput_case", hooks_text)
 
     def test_docs_no_longer_present_old_public_subscription_template_or_stale_vllm_version(self) -> None:
         event_catalog = (REPO_ROOT / "doc" / "reference" / "event-catalog.md").read_text(encoding="utf-8")
         vllm_compat = (REPO_ROOT / "doc" / "reference" / "vllm-compatibility.md").read_text(encoding="utf-8")
-        testing_guide = (REPO_ROOT / "doc" / "dev" / "testing-guide.md").read_text(encoding="utf-8")
+        testing_guide = (REPO_ROOT / "doc" / "development" / "testing-guide.md").read_text(encoding="utf-8")
         project_structure = (REPO_ROOT / "doc" / "reference" / "project-structure.md").read_text(encoding="utf-8")
-        benchmarking = (REPO_ROOT / "doc" / "guides" / "benchmarking.md").read_text(encoding="utf-8")
-        esamp_guide = (REPO_ROOT / "doc" / "guides" / "esamp" / "index.md").read_text(encoding="utf-8")
+        benchmarking = (REPO_ROOT / "doc" / "developer-guides" / "benchmarking.md").read_text(encoding="utf-8")
+        esamp_guide = (REPO_ROOT / "doc" / "reference" / "esamp-usage.md").read_text(encoding="utf-8")
 
         self.assertNotIn("def subscriptions(", event_catalog)
         self.assertNotIn("vllm==0.7.2", vllm_compat)
-        self.assertIn("tllm/verification/automated_tests.py", testing_guide)
+        self.assertIn("tllm/verification/", testing_guide)
         self.assertNotIn("tllm/workflows/automation/automated_tests.py", testing_guide)
         self.assertIn("tllm/verification/", project_structure)
         self.assertNotIn("tllm/workflows/automation", project_structure)
@@ -81,23 +101,23 @@ class MigrationFinalizationUnitTest(unittest.TestCase):
         self.assertFalse((esamp_root / "runtime_adapter.py").exists())
         self.assertFalse((esamp_root / "runtime_support.py").exists())
         self.assertFalse((esamp_root / "workflow_support.py").exists())
-        self.assertFalse((REPO_ROOT / "tllm" / "consumers" / "nn_side_train").exists())
+        self.assertFalse((REPO_ROOT / "tllm" / "consumers" / "nn_esamp").exists())
 
-    def test_esamp_template_helpers_no_longer_live_under_runtime_side_train_names(self) -> None:
+    def test_esamp_template_helpers_no_longer_live_under_runtime_esamp_names(self) -> None:
         runtime = REPO_ROOT / "tllm" / "runtime"
         esamp = REPO_ROOT / "tllm" / "consumers" / "esamp"
-        self.assertFalse((runtime / "side_train_ffn_template.py").exists())
-        self.assertFalse((runtime / "side_train_templates.py").exists())
+        self.assertFalse((runtime / "esamp_ffn_template.py").exists())
+        self.assertFalse((runtime / "esamp_templates.py").exists())
         self.assertTrue((esamp / "initializers" / "svd.py").is_file())
         self.assertFalse((esamp / "template.py").exists())
         self.assertFalse((esamp / "ffn_template.py").exists())
         self.assertFalse((esamp / "template_utils.py").exists())
 
     def test_runner_wrappers_are_removed(self) -> None:
-        wrapper = REPO_ROOT / "tllm" / "runner" / "per_request_side_train_benchmark.py"
+        wrapper = REPO_ROOT / "tllm" / "runner" / "per_request_esamp_benchmark.py"
         self.assertFalse(wrapper.exists())
 
-        mod = importlib.import_module("tllm.workflows.benchmarks.per_request_side_train_benchmark")
+        mod = importlib.import_module("tllm.workflows.benchmarks.per_request_esamp_benchmark")
         self.assertTrue(callable(mod.main))
 
     def test_dummy_capture_benchmark_chain_is_removed(self) -> None:

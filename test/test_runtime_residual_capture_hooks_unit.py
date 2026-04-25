@@ -39,7 +39,7 @@ class RuntimeResidualCaptureHooksUnitTest(unittest.TestCase):
             residual_capture_hooks._sampler_patch,
             "maybe_capture_source_precompute",
         ) as p_precompute, mock.patch.object(
-            residual_capture_hooks._legacy_bridge, "dispatch_layer_lifecycle_events"
+            residual_capture_hooks._hidden_bridge, "dispatch_layer_lifecycle_events"
         ) as p_events:
             residual_capture_hooks.install_layer_forward_taps(
                 core=core,
@@ -96,7 +96,7 @@ class RuntimeResidualCaptureHooksUnitTest(unittest.TestCase):
         core = type("Core", (), {"RUNTIME": runtime})()
         runner = type("Runner", (), {"device": torch.device("cpu"), "model": object()})()
 
-        with mock.patch.object(residual_capture_hooks._legacy_bridge, "dispatch_layer_lifecycle_events") as p_events:
+        with mock.patch.object(residual_capture_hooks._hidden_bridge, "dispatch_layer_lifecycle_events") as p_events:
             residual_capture_hooks.install_layer_forward_taps(
                 core=core,
                 runner=runner,

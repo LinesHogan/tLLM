@@ -11,7 +11,7 @@ import torch
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
 
 from tllm.runtime.sampler_bridge.min_p import apply_min_p, min_p_keep_mask
-from tllm.runtime.sampler_bridge.legacy.dense_cache import gather_dense_candidate_logits as _gather_dense_candidate_logits
+from tllm.runtime.sampler_bridge.backends.dense_cache import gather_dense_candidate_logits as _gather_dense_candidate_logits
 from tllm.runtime.sampler_bridge.truth import (
     apply_candidate_intervention,
     project_candidate_logits,
@@ -281,7 +281,7 @@ def sample_rows_exact_candidates(
         )
         if generators or min_p is None:
             return None
-        from tllm.runtime.sampler_bridge.legacy import fixed_topk_minp
+        from tllm.runtime.sampler_bridge.backends import fixed_topk_minp
 
         return fixed_topk_minp.sample_fixed_topk_min_p_candidates(
             logits=subset_logits,

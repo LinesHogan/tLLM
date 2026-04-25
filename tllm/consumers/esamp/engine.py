@@ -40,7 +40,7 @@ _SIDE_TRAIN_STREAM_PRIORITY = 2
 
 
 @dataclass(slots=True, frozen=True)
-class SideTrainStats:
+class ESampStats:
     loss_avg: float
     loss_count: int
     trace_losses: tuple[float, ...] = ()
@@ -74,7 +74,7 @@ def _copy_parameters(dst: torch.nn.Module, src: torch.nn.Module) -> None:
             p_dst.copy_(p_src)
 
 
-def _make_side_train_stream(device: torch.device) -> torch.cuda.Stream:
+def _make_esamp_stream(device: torch.device) -> torch.cuda.Stream:
     return torch.cuda.Stream(device=device, priority=_SIDE_TRAIN_STREAM_PRIORITY)
 
 
@@ -297,8 +297,8 @@ class _ESampEngineCore:
 
     def _config_resource_signature(self, config: ESampConsumerConfig) -> tuple[object, ...]:
         return (
-            max(1, int(config.side_hidden_dim)),
-            float(config.side_lr),
+            max(1, int(config.distiller_hidden_dim)),
+            float(config.distiller_lr),
             bool(config.per_request_models),
             bool(config.per_request_model_bank),
             max(0, int(config.model_bank_slots)),
@@ -352,9 +352,9 @@ class _ESampEngineCore:
         s = self.state
         reset_resources = self._resource_signature() != self._config_resource_signature(config)
         reset_runtime_cache = reset_resources or int(s.model_bank_flush_interval) != max(1, int(config.model_bank_flush_interval))
-        s.hidden_dim = max(1, int(config.side_hidden_dim))
-        s.lr = float(config.side_lr)
-        s.enabled = bool(config.enable_side_train)
+        s.hidden_dim = max(1, int(config.distiller_hidden_dim))
+        s.lr = float(config.distiller_lr)
+        s.enabled = bool(config.enable_esamp_training)
         s.per_request_models = bool(config.per_request_models)
         s.per_request_model_bank = bool(config.per_request_model_bank)
         s.model_bank_slots = max(0, int(config.model_bank_slots))
@@ -667,8 +667,8 @@ class _ESampEngineCore:
             or pipeline.src.dtype != hidden_dtype
         ):
             self._reset_pipeline_runtime_state(reset_streams=False)
-            s.forward_stream = _make_side_train_stream(device)
-            s.train_stream = _make_side_train_stream(device)
+            s.forward_stream = _make_esamp_stream(device)
+            s.train_stream = _make_esamp_stream(device)
             s.src_ready_events = _ensure_events([], slots)
             s.tgt_ready_events = _ensure_events([], slots)
             s.src_staged_events = _ensure_events([], slots)
@@ -681,8 +681,8 @@ class _ESampEngineCore:
                 )
             self._reset_runtime_cache()
             return
-        s.forward_stream = s.forward_stream or _make_side_train_stream(device)
-        s.train_stream = s.train_stream or _make_side_train_stream(device)
+        s.forward_stream = s.forward_stream or _make_esamp_stream(device)
+        s.train_stream = s.train_stream or _make_esamp_stream(device)
         s.src_ready_events = _ensure_events(s.src_ready_events, slots)
         s.tgt_ready_events = _ensure_events(s.tgt_ready_events, slots)
         s.src_staged_events = _ensure_events(s.src_staged_events, slots)
@@ -1338,13 +1338,13 @@ class _ESampEngineCore:
         if s.train_stream is not None:
             s.train_stream.synchronize()
 
-    def read_and_reset_stats(self, sync: bool = True) -> SideTrainStats:
+    def read_and_reset_stats(self, sync: bool = True) -> ESampStats:
         s = self.state
         if sync:
             self.synchronize()
         if s.stats is None:
             if not s.enabled or s.device is None:
-                return SideTrainStats(loss_avg=0.0, loss_count=0)
+                return ESampStats(loss_avg=0.0, loss_count=0)
             raise RuntimeError("ESamp engine stats buffers are missing while the engine is enabled")
         stats = self._require_stats()
         count = int(stats.loss_count.item())
@@ -1353,16 +1353,16 @@ class _ESampEngineCore:
             loss_sum=torch.zeros_like(stats.loss_sum),
             loss_count=torch.zeros_like(stats.loss_count),
         )
-        return SideTrainStats(loss_avg=avg, loss_count=count)
+        return ESampStats(loss_avg=avg, loss_count=count)
 
-    def read_and_reset_per_request_stats(self, sync: bool = True) -> dict[int, SideTrainStats]:
+    def read_and_reset_per_request_stats(self, sync: bool = True) -> dict[int, ESampStats]:
         if sync:
             self.synchronize()
-        out: dict[int, SideTrainStats] = {}
+        out: dict[int, ESampStats] = {}
         for prompt_idx, entry in sorted(self.state.per_request.items()):
             count = int(entry.loss_count.item())
             avg = float(entry.loss_sum.item() / max(1, count))
-            out[int(prompt_idx)] = SideTrainStats(
+            out[int(prompt_idx)] = ESampStats(
                 loss_avg=avg,
                 loss_count=count,
                 trace_losses=tuple(entry.trace_losses),
@@ -1586,4 +1586,4 @@ class ESampTrainEngine(_ESampEngineCore):
         )
 
 
-__all__ = ["ESampTrainEngine", "SideTrainStats", "copy_active_rows_into_buffer", "group_row_indices_by_prompt"]
+__all__ = ["ESampTrainEngine", "ESampStats", "copy_active_rows_into_buffer", "group_row_indices_by_prompt"]

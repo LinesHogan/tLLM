@@ -164,13 +164,13 @@ ESamp 训练路径的正确性验证分两步。**不要跳过第二步**——p
 
 ```bash
 python -m pytest -q \
-  test/test_side_train_per_request_unit.py \
+  test/test_esamp_per_request_unit.py \
   test/test_esamp_distiller_sampling_integration_unit.py \
   test/test_esamp_model_bank_backend_unit.py
 ```
 
 这些测试验证什么：
-- `test_side_train_per_request_unit.py`：per-request 模式的 side-train 是否能正确创建参数、执行 forward/backward
+- `test_esamp_per_request_unit.py`：per-request 模式的 side-train 是否能正确创建参数、执行 forward/backward
 - `test_esamp_distiller_sampling_integration_unit.py`：distiller 的预测结果是否能正确接到 sampler bridge
 - `test_esamp_model_bank_backend_unit.py`：model-bank 的 slot 分配、参数共享、grouped training 是否正确
 

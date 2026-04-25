@@ -4,12 +4,14 @@ This is a command reference for ESamp. It focuses on how to run it, what the par
 
 For design background, read [ESamp Design](../developer-guides/esamp-design.md).
 
+Programmatic integrations register `ESampConsumer` through `configure_esamp_runtime()` before calling `llm.generate(...)`.
+
 ## Functional Check
 
 Before benchmarking, first confirm that side-training runs and loss appears:
 
 ```bash
-python -m tllm.workflows.repro.repro_side_train_loss \
+python -m tllm.workflows.repro.repro_esamp_loss \
   --model-name Qwen/Qwen2.5-0.5B-Instruct \
   --prompt-file test/prompt_debug_list.txt \
   --source-layer-path model.model.layers[0] \
@@ -22,7 +24,7 @@ Check that `loss_count > 0` and that the loss is finite. If loss is zero or NaN,
 
 ```bash
 VLLM_USE_FLASHINFER_SAMPLER=1 \
-python -m tllm.workflows.benchmarks.per_request_side_train_benchmark \
+python -m tllm.workflows.benchmarks.per_request_esamp_benchmark \
   --emit-json-summary \
   --model-name Qwen/Qwen2.5-0.5B-Instruct \
   --dtype bfloat16 \
@@ -38,7 +40,7 @@ python -m tllm.workflows.benchmarks.per_request_side_train_benchmark \
   --sampling-temperature 0.8 \
   --sampling-top-p 0.95 \
   --sampling-top-k -1 \
-  --side-lr 1e-3 \
+  --distiller-lr 1e-3 \
   --model-bank-flush-interval 1 \
   --model-bank-init-method ffn_fast_svd \
   --trajectory-topk 1 \
@@ -96,8 +98,8 @@ Use it after the torch backend already works. If it fails or regresses, return t
 |-----------|---------|-----------------------|
 | `--source-layer-path` | Distiller input hidden layer | Early layer |
 | `--target-layer-path` | Training target hidden layer | Late layer |
-| `--side-hidden-dim` | Side model hidden width | Tune for quality/cost |
-| `--side-lr` | Side-training learning rate | `1e-3` |
+| `--distiller-hidden-dim` | Side model hidden width | Tune for quality/cost |
+| `--distiller-lr` | Side-training learning rate | `1e-3` |
 | `--model-bank-rank` | Low-rank model-bank rank | `64` |
 | `--model-bank-flush-interval` | Optimizer flush interval | `1` for strict training |
 | `--model-bank-init-method` | Initialization method | `ffn_fast_svd` for Qwen paths |

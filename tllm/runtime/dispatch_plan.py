@@ -10,7 +10,7 @@ from tllm.consumers.base import BaseConsumer
 from tllm.ports.base import ConsumerFlow
 from tllm.ports.base import PortKind
 from tllm.contracts.subscription import ConsumerSubscription
-from tllm.runtime.legacy_consumer_compat import legacy_subscriptions
+from tllm.runtime.consumer_compat import consumer_subscriptions
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class DispatchPlan:
                 flow_targets.append(FlowDispatchTarget(consumer=consumer, flow=flow))
             if flows:
                 continue
-            for sub in legacy_subscriptions(consumer):
+            for sub in consumer_subscriptions(consumer):
                 by_event.setdefault(sub.event_name, []).append(DispatchTarget(consumer=consumer, subscription=sub))
         return cls(by_event=by_event, flow_targets=flow_targets)
 
