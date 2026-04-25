@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal ESamp starter: generate 16 parallel answers with Qwen3-1.7B."""
+"""Minimal ESamp starter: generate 16 parallel answers with Qwen2.5-7B-Instruct."""
 
 from __future__ import annotations
 
@@ -8,13 +8,14 @@ from typing import Sequence
 
 from vllm import SamplingParams
 
+from tllm import make_llm
 from tllm.runtime import residual_runtime as runtime
-from tllm.util.tools import make_llm, shutdown_llm_instance
+from tllm.util.tools import shutdown_llm_instance
 from tllm.workflows import esamp_support
 
 
-DEFAULT_MODEL_NAME = "Qwen/Qwen3-1.7B"
-DEFAULT_PROMPT = "用两句话介绍 tLLM，并给出一个适合它的使用场景。"
+DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_PROMPT = "Suprise me an unexpectedly story about 1 evil sorcerers and the brave hero."
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -29,7 +30,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=-1)
-    parser.add_argument("--min-p", type=float, default=0.0)
+    parser.add_argument("--min-p", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--source-layer-path", type=str, default="model.model.layers[0].input_layernorm")
     parser.add_argument("--target-layer-path", type=str, default="model.model.layers[-1].input_layernorm")
@@ -42,7 +43,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-bank-forward-backend", type=str, default="torch")
     parser.add_argument("--model-bank-train-cudagraph", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--enable-distiller-intervention", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--distiller-beta", type=float, default=0.1)
+    parser.add_argument("--distiller-beta", type=float, default=0.25)
     parser.add_argument("--distiller-sampler-backend", type=str, default="post_filter_exact")
     return parser.parse_args(argv)
 

@@ -62,7 +62,7 @@ For most users, the simplest verification is the ESamp starter:
 python starter.py --max-new-tokens 32
 ```
 
-This loads `Qwen/Qwen3-1.7B`, generates 16 answers in parallel, and runs ESamp side-training alongside generation. A healthy run ends with statistics similar to:
+This loads `Qwen/Qwen2.5-7B-Instruct`, generates 16 answers in parallel, and runs ESamp side-training alongside generation. A healthy run ends with statistics similar to:
 
 ```text
 ESamp stats: loss_avg=... loss_count=... answers=16 ...

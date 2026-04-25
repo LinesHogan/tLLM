@@ -34,7 +34,7 @@ python starter.py
 
 This command:
 
-1. Loads `Qwen/Qwen3-1.7B`.
+1. Loads `Qwen/Qwen2.5-7B-Instruct`.
 2. Configures ESamp.
 3. Generates 16 answers in parallel.
 4. Runs side-training during generation.
@@ -55,8 +55,8 @@ python starter.py --max-new-tokens 32
 ```python
 from vllm import SamplingParams
 
+from tllm import make_llm
 from tllm.runtime import residual_runtime as runtime
-from tllm.util.tools import make_llm
 from tllm.workflows import esamp_support
 
 consumer = esamp_support.configure_esamp_runtime(
@@ -81,7 +81,7 @@ consumer = esamp_support.configure_esamp_runtime(
 )
 
 llm = make_llm(
-    model_name="Qwen/Qwen3-1.7B",
+    model_name="Qwen/Qwen2.5-7B-Instruct",
     dtype="bfloat16",
     gpu_memory_utilization=0.8,
     max_model_len=512,

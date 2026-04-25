@@ -61,7 +61,7 @@ python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA available: {
 python starter.py --max-new-tokens 32
 ```
 
-这个命令会加载 `Qwen/Qwen3-1.7B`，并行生成 16 条回答，同时在旁路运行 ESamp side-train。环境正常时，输出末尾会看到类似这样的统计：
+这个命令会加载 `Qwen/Qwen2.5-7B-Instruct`，并行生成 16 条回答，同时在旁路运行 ESamp side-train。环境正常时，输出末尾会看到类似这样的统计：
 
 ```text
 ESamp stats: loss_avg=... loss_count=... answers=16 ...

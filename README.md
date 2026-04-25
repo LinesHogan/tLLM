@@ -27,18 +27,18 @@ The migration is only a few lines:
 ```diff
 - from vllm import LLM, SamplingParams
 + from vllm import SamplingParams
-+ from tllm.util.tools import make_llm
++ from tllm import make_llm
 + from tllm.workflows.esamp_support import configure_esamp_runtime
 
 + configure_esamp_runtime()
-+ llm = make_llm(model_name="Qwen/Qwen3-1.7B", dtype="bfloat16")
++ llm = make_llm(model_name="Qwen/Qwen2.5-7B-Instruct", dtype="bfloat16")
   outputs = llm.generate(
       [f"Suprise me an unexpectedly story about {i} evil sorcerers and the brave hero." for i in range(2, 16)],
       SamplingParams(max_tokens=64, temperature=0.8, n=8),
   )
 ```
 
-`make_llm` installs tLLM's vLLM v1 runtime hooks; `configure_esamp_runtime()` registers the ESamp consumer that actually uses those hooks. 
+`make_llm` installs tLLM's vLLM v1 runtime hooks; `configure_esamp_runtime()` registers the ESamp consumer that actually uses those hooks.
 
 In the aligned 7B min-p ESamp benchmark, with RTX 4090 GPU, the optimized ESamp has measured about **96% of a vLLM baseline with modern inference optimizations enabled**. That baseline uses the vLLM V1 engine with CUDA Graph execution, FlashInfer sampling, bfloat16 weights, prefix-cache control for fair measurement, and the same sampling workload. 
 
@@ -68,7 +68,7 @@ pip install -e .
 python starter.py --max-new-tokens 32
 ```
 
-The starter runs ESamp with `Qwen/Qwen3-1.7B`, generates 16 answers in parallel, and prints side-training statistics.
+The starter runs ESamp with `Qwen/Qwen2.5-7B-Instruct`, generates 16 answers in parallel, and prints side-training statistics.
 
 ## Documentation
 
@@ -84,3 +84,13 @@ The starter runs ESamp with `Qwen/Qwen3-1.7B`, generates 16 answers in parallel,
 - PyTorch with CUDA
 
 The current development environment is validated primarily with `vllm==0.10.x`.
+
+## FAQ
+
+> What is the name "tLLM" for?
+
+tLLM is a test-time intervention layer for vLLM. The name is a recursive-style abbreviation: **tLLM is a test-time intervention layer for vLLM**.
+
+> I have a test time training algorithm. How can I implement it with tLLM?
+
+You can contact us, and we will offer advice and technical support to help you achieve efficient implementation under the tLLM framework, enabling your algorithm to reach production-level throughput!

@@ -69,7 +69,7 @@ def build_prompt_batch(base_prompts: List[str], batch_size: int) -> List[str]:
     return prompts
 
 
-def make_llm(
+def make_plain_llm(
     model_name: str,
     dtype: str,
     gpu_memory_utilization: float,

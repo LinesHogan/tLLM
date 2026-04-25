@@ -36,7 +36,7 @@ python starter.py
 ```
 
 这会：
-1. 加载 `Qwen/Qwen3-1.7B`
+1. 加载 `Qwen/Qwen2.5-7B-Instruct`
 2. 创建 `ESampConsumer` 实例
 3. 把 consumer 注册到 tLLM runtime
 4. 并行生成 16 条回答
@@ -57,8 +57,8 @@ python starter.py --max-new-tokens 32
 ```python
 from vllm import SamplingParams
 
+from tllm import make_llm
 from tllm.runtime import residual_runtime as runtime
-from tllm.util.tools import make_llm
 from tllm.workflows import esamp_support
 
 # 1. 配置 ESamp，并把 consumer 交给 runtime
@@ -85,7 +85,7 @@ consumer = esamp_support.configure_esamp_runtime(
 
 # 2. 创建 vLLM 实例。tLLM 会在这里安装 vLLM v1 runtime patch
 llm = make_llm(
-    model_name="Qwen/Qwen3-1.7B",
+    model_name="Qwen/Qwen2.5-7B-Instruct",
     dtype="bfloat16",
     gpu_memory_utilization=0.8,
     max_model_len=512,

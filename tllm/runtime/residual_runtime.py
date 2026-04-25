@@ -551,7 +551,7 @@ def make_llm(*args: object, **kwargs: object) -> object:
     install_runner_patch()
     from tllm.util import tools as _tool_helpers
 
-    return _tool_helpers.make_llm(*args, **kwargs)
+    return _tool_helpers.make_plain_llm(*args, **kwargs)
 
 
 __all__ = [

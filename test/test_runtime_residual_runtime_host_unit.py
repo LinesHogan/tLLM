@@ -4,18 +4,11 @@
 from __future__ import annotations
 
 import importlib
-import sys
 import unittest
 
 
 class RuntimeResidualRuntimeHostUnitTest(unittest.TestCase):
-    def _drop_modules(self, *prefixes: str) -> None:
-        for name in list(sys.modules):
-            if any(name == prefix or name.startswith(prefix + ".") for prefix in prefixes):
-                sys.modules.pop(name, None)
-
     def test_residual_runtime_host_exposes_runtime_state_and_patch_entrypoints(self) -> None:
-        self._drop_modules("tllm.runtime.residual_runtime")
         host = importlib.import_module("tllm.runtime.residual_runtime")
 
         self.assertTrue(hasattr(host, "RUNTIME"))
@@ -24,6 +17,18 @@ class RuntimeResidualRuntimeHostUnitTest(unittest.TestCase):
         self.assertTrue(callable(host.register_dispatch_consumer))
         self.assertTrue(callable(host.replace_dispatch_consumers))
         self.assertTrue(callable(host.clear_dispatch_consumers))
+
+    def test_public_tllm_make_llm_is_runtime_hook_installing_entrypoint(self) -> None:
+        tllm = importlib.import_module("tllm")
+        host = importlib.import_module("tllm.runtime.residual_runtime")
+
+        self.assertIs(tllm.make_llm, host.make_llm)
+
+    def test_util_tools_exposes_only_explicit_plain_llm_constructor(self) -> None:
+        tools = importlib.import_module("tllm.util.tools")
+
+        self.assertTrue(callable(tools.make_plain_llm))
+        self.assertFalse(hasattr(tools, "make_llm"))
 
 
 if __name__ == "__main__":

@@ -14,12 +14,12 @@ class StarterUnitTest(unittest.TestCase):
         sys.modules.pop("starter", None)
         return importlib.import_module("starter")
 
-    def test_defaults_target_qwen3_and_sixteen_parallel_answers(self) -> None:
+    def test_defaults_target_configured_model_and_sixteen_parallel_answers(self) -> None:
         starter = self._load_starter()
 
         args = starter._parse_args([])
 
-        self.assertEqual(args.model_name, "Qwen/Qwen3-1.7B")
+        self.assertEqual(args.model_name, starter.DEFAULT_MODEL_NAME)
         self.assertEqual(args.num_answers, 16)
         self.assertTrue(args.enable_distiller_intervention)
         self.assertEqual(args.distiller_sampler_backend, "post_filter_exact")
@@ -36,6 +36,15 @@ class StarterUnitTest(unittest.TestCase):
         self.assertEqual(len(params), 16)
         self.assertTrue(all(getattr(p, "n") == 1 for p in params))
         self.assertEqual([getattr(p, "seed") for p in params[:3]], [123, 124, 125])
+
+    def test_starter_uses_runtime_make_llm_so_vllm_hooks_are_installed(self) -> None:
+        starter = self._load_starter()
+        tllm = importlib.import_module("tllm")
+        tools = importlib.import_module("tllm.util.tools")
+
+        self.assertIs(starter.make_llm, tllm.make_llm)
+        self.assertIsNot(starter.make_llm, tools.make_plain_llm)
+        self.assertFalse(hasattr(tools, "make_llm"))
 
     def test_configure_starter_runtime_uses_esamp_model_bank_and_distiller(self) -> None:
         starter = self._load_starter()
