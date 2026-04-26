@@ -89,12 +89,13 @@ llm = make_llm(
     max_model_len=512,
     enable_prefix_caching=False,
     enforce_eager=False,
+    seed=2026,
 )
 
 # 3. 显式构造 16 个并行请求。starter.py 这样写，是为了绕开部分 vLLM V1 版本中 n>1 输出不稳定的问题
 prompts = ["用两句话介绍 tLLM。"] * 16
 params = [
-    SamplingParams(n=1, temperature=0.8, top_p=0.95, max_tokens=32, seed=2026 + i)
+    SamplingParams(n=1, temperature=0.8, top_p=0.95, max_tokens=32)
     for i in range(16)
 ]
 
@@ -111,6 +112,20 @@ runtime.synchronize_esamp()
 stats = runtime.read_and_reset_esamp_stats(sync=True)
 print(stats)
 ```
+
+`starter.py` 默认对所有显式 request 使用同一个 seed：
+
+```bash
+python starter.py --seed 2026 --seed-mode shared
+```
+
+这样可以避开 vLLM 的 per-request generator 路径，在环境支持时让 FlashInfer sampler 继续生效。如果你更需要每条 answer 都有独立且可复现的随机流，可以使用：
+
+```bash
+python starter.py --seed 2026 --seed-mode per-request
+```
+
+shared 模式会把 `seed` 交给 LLM engine，request 级别的 `SamplingParams.seed` 保持未设置。per-request 模式会使用 `seed + i` 作为每个 request 的 seed。此时 vLLM 可能打印 `FlashInfer 0.2.3+ does not support per-request generators. Falling back to PyTorch-native implementation.` 这是该 seed 模式下的预期 warning。
 
 对其他 consumer 来说，结构也是类似的：配置 consumer → 交给 runtime → 生成 → 同步 → 读 stats。区别在于 ESamp 额外需要 request mapping 和 sampler intervention 配置，所以 starter 会比最简单的只读 consumer 多几行。
 

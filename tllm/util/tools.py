@@ -76,7 +76,11 @@ def make_plain_llm(
     max_model_len: int,
     enable_prefix_caching: bool,
     enforce_eager: bool = False,
+    seed: int | None = None,
 ) -> LLM:
+    kwargs = {}
+    if seed is not None:
+        kwargs["seed"] = int(seed)
     return LLM(
         model=model_name,
         tensor_parallel_size=1,
@@ -85,6 +89,7 @@ def make_plain_llm(
         enforce_eager=bool(enforce_eager),
         dtype=dtype,
         enable_prefix_caching=bool(enable_prefix_caching),
+        **kwargs,
     )
 
 

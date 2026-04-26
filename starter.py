@@ -32,6 +32,16 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=-1)
     parser.add_argument("--min-p", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument(
+        "--seed-mode",
+        type=str,
+        default="shared",
+        choices=["shared", "per-request"],
+        help=(
+            "Use one shared seed for all requests by default so vLLM can keep FlashInfer sampler paths. "
+            "Use per-request for seed+i reproducibility, which may trigger PyTorch-native sampler fallback."
+        ),
+    )
     parser.add_argument("--source-layer-path", type=str, default="model.model.layers[0].input_layernorm")
     parser.add_argument("--target-layer-path", type=str, default="model.model.layers[-1].input_layernorm")
     parser.add_argument("--graph-scratch-rows", type=int, default=0)
@@ -43,7 +53,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-bank-forward-backend", type=str, default="torch")
     parser.add_argument("--model-bank-train-cudagraph", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--enable-distiller-intervention", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--distiller-beta", type=float, default=0.25)
+    # The starter uses min_p by default; a stronger beta makes intervention effects visible in short demos.
+    parser.add_argument("--distiller-beta", type=float, default=0.8)
     parser.add_argument("--distiller-sampler-backend", type=str, default="post_filter_exact")
     return parser.parse_args(argv)
 
@@ -60,11 +71,15 @@ def _build_parallel_requests(args: argparse.Namespace) -> tuple[list[str], list[
             top_k=int(args.top_k),
             min_p=float(args.min_p),
             max_tokens=int(args.max_new_tokens),
-            seed=int(args.seed) + i,
+            seed=(int(args.seed) + i) if str(args.seed_mode) == "per-request" else None,
         )
         for i in range(n)
     ]
     return prompts, params, [0] * n, list(range(n))
+
+
+def _llm_seed(args: argparse.Namespace) -> int | None:
+    return int(args.seed) if str(args.seed_mode) == "shared" else None
 
 
 def _configure_esamp(args: argparse.Namespace):
@@ -126,6 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_model_len=int(args.max_model_len),
         enable_prefix_caching=False,
         enforce_eager=False,
+        seed=_llm_seed(args),
     )
 
     try:

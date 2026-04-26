@@ -77,7 +77,7 @@ pip install -e .
 python starter.py --max-new-tokens 32
 ```
 
-如果环境正常，你会看到 16 条生成结果，以及 ESamp 的 `loss_count` 和 `loss_avg`。
+如果环境正常，你会看到 16 条生成结果，以及 ESamp 的 `loss_count`、`loss_avg` 和 sampler-guidance counters。starter 默认使用 `--seed-mode shared`；如果你更需要每个 request 独立的 `seed + i` 随机流，可以使用 `--seed-mode per-request`，但这可能触发 FlashInfer sampler fallback warning。
 
 ---
 

@@ -21,10 +21,11 @@ class StarterUnitTest(unittest.TestCase):
 
         self.assertEqual(args.model_name, starter.DEFAULT_MODEL_NAME)
         self.assertEqual(args.num_answers, 16)
+        self.assertEqual(args.seed_mode, "shared")
         self.assertTrue(args.enable_distiller_intervention)
         self.assertEqual(args.distiller_sampler_backend, "post_filter_exact")
 
-    def test_parallel_requests_expand_one_prompt_to_sixteen_samples(self) -> None:
+    def test_parallel_requests_default_to_shared_seed_for_flashinfer_sampler(self) -> None:
         starter = self._load_starter()
         args = starter._parse_args(["--prompt", "Explain tLLM.", "--num-answers", "16", "--seed", "123"])
 
@@ -35,7 +36,19 @@ class StarterUnitTest(unittest.TestCase):
         self.assertEqual(sample_indices, list(range(16)))
         self.assertEqual(len(params), 16)
         self.assertTrue(all(getattr(p, "n") == 1 for p in params))
+        self.assertEqual([getattr(p, "seed") for p in params[:3]], [None, None, None])
+        self.assertEqual(starter._llm_seed(args), 123)
+
+    def test_parallel_requests_can_use_per_request_seed_mode(self) -> None:
+        starter = self._load_starter()
+        args = starter._parse_args(
+            ["--prompt", "Explain tLLM.", "--num-answers", "16", "--seed", "123", "--seed-mode", "per-request"]
+        )
+
+        _prompts, params, _prompt_indices, _sample_indices = starter._build_parallel_requests(args)
+
         self.assertEqual([getattr(p, "seed") for p in params[:3]], [123, 124, 125])
+        self.assertIsNone(starter._llm_seed(args))
 
     def test_starter_uses_runtime_make_llm_so_vllm_hooks_are_installed(self) -> None:
         starter = self._load_starter()

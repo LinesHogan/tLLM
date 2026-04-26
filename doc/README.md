@@ -79,7 +79,7 @@ pip install -e .
 python starter.py --max-new-tokens 32
 ```
 
-If the environment is healthy, you should see 16 generated answers and ESamp statistics such as `loss_count` and `loss_avg`.
+If the environment is healthy, you should see 16 generated answers and ESamp statistics such as `loss_count`, `loss_avg`, and sampler-guidance counters. The starter defaults to `--seed-mode shared`; use `--seed-mode per-request` when independent request seeds are more important than keeping FlashInfer sampler paths available.
 
 ---
 

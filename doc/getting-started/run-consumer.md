@@ -41,7 +41,7 @@ This command:
 2. Configures ESamp.
 3. Generates 16 answers in parallel.
 4. Runs ESamp's training mechanism during generation.
-5. Prints `loss_count` and `loss_avg`.
+5. Prints training and sampler-guidance counters such as `loss_count`, `loss_avg`, and `distiller_candidate_samples`.
 
 For a shorter run:
 
@@ -50,6 +50,21 @@ python starter.py --max-new-tokens 32
 ```
 
 `loss_count > 0` means ESamp's training mechanism actually ran.
+`distiller_candidate_samples > 0` means the sampler-guidance path actually modified post-filter candidates.
+
+By default, `starter.py` uses one shared seed for all explicit requests:
+
+```bash
+python starter.py --seed 2026 --seed-mode shared
+```
+
+This avoids vLLM's per-request generator path, so FlashInfer sampler acceleration can stay active when the rest of the environment supports it. For stricter per-answer reproducibility, use:
+
+```bash
+python starter.py --seed 2026 --seed-mode per-request
+```
+
+In shared mode, `seed` is passed to the LLM engine and request-level `SamplingParams.seed` is left unset. Per-request mode sets request seeds to `seed + i`. vLLM may then log `FlashInfer 0.2.3+ does not support per-request generators. Falling back to PyTorch-native implementation.` This warning is expected for that seed mode.
 
 ## Key Code Shape
 
@@ -88,11 +103,12 @@ llm = make_llm(
     max_model_len=512,
     enable_prefix_caching=False,
     enforce_eager=False,
+    seed=2026,
 )
 
 prompts = ["Introduce tLLM in two sentences."] * 16
 params = [
-    SamplingParams(n=1, temperature=0.8, top_p=0.95, max_tokens=32, seed=2026 + i)
+    SamplingParams(n=1, temperature=0.8, top_p=0.95, max_tokens=32)
     for i in range(16)
 ]
 
@@ -109,7 +125,7 @@ stats = runtime.read_and_reset_esamp_stats(sync=True)
 print(stats)
 ```
 
-The explicit 16-request construction is intentional. Some vLLM V1 versions do not emit every `n>1` sample consistently through the public output path, so the starter uses separate requests with `n=1`.
+The explicit 16-request construction is intentional. Some vLLM V1 versions do not emit every `n>1` sample consistently through the public output path, so the starter uses separate requests with `n=1`. Keep a shared seed for the FlashInfer-friendly path, or use `--seed-mode per-request` when independent per-request generators matter more than sampler backend selection.
 
 ## Benchmark ESamp
 

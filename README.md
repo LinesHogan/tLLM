@@ -68,6 +68,7 @@ python starter.py --max-new-tokens 32
 ```
 
 The starter runs ESamp with `Qwen/Qwen2.5-7B-Instruct`, generates 16 answers in parallel, and prints runtime adaptation statistics.
+It defaults to `--seed-mode shared`, which avoids vLLM's per-request generator path and keeps FlashInfer sampler acceleration available when supported. Use `--seed-mode per-request` if independent `seed + i` request streams matter more than that sampler backend.
 
 ## Documentation
 
