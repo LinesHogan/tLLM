@@ -170,7 +170,7 @@ python -m pytest -q \
 ```
 
 这些测试验证什么：
-- `test_esamp_per_request_unit.py`：per-request 模式的 side-train 是否能正确创建参数、执行 forward/backward
+- `test_esamp_per_request_unit.py`：per-request 模式的 ESamp 训练机制是否能正确创建参数、执行 forward/backward
 - `test_esamp_distiller_sampling_integration_unit.py`：distiller 的预测结果是否能正确接到 sampler bridge
 - `test_esamp_model_bank_backend_unit.py`：model-bank 的 slot 分配、参数共享、grouped training 是否正确
 
@@ -200,7 +200,7 @@ python -m tllm.verification.automated_tests \
 
 | 检查项 | 合格 | 不合格时怎么办 |
 |--------|------|--------------|
-| `single_on` 的 `loss_count` | > 0 | 检查 side-train 是否启动、显存是否够 |
+| `single_on` 的 `loss_count` | > 0 | 检查 ESamp 训练是否启动、显存是否够 |
 | `per_request_on` 的 `loss_count` | > 0 | 检查 per-request 参数分配是否成功 |
 | `model_bank_on` 的 `loss_count` | > 0 | 检查 model-bank slot 分配和 flush 逻辑 |
 | loss 值与历史基线 | 近似一致 | 如果显著偏离，检查学习率、初始化、或 workload 是否变化 |

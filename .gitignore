@@ -217,9 +217,9 @@ __marimo__/
 
 ## Costom
 
-outputs/*.json
+outputs
 .worktrees/
 .codex
 .codex/
 AGENTS.md
-docs/plans/
+docs

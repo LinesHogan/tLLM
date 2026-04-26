@@ -34,7 +34,7 @@ tLLM 的文档按三种用户类型组织：
 
 ### 1. 终端用户：我想用内置算法做生成
 
-你想直接跑 tLLM 内置的 side-train 算法（ESamp），看看效果，或者用它来做生成。
+你想直接跑 tLLM 内置的 ESamp consumer，看看 runtime adaptation 和 sampler guidance 的效果，或者用它来做生成。
 
 **入口**：
 1. [安装指南](getting-started/installation.md)
@@ -43,13 +43,14 @@ tLLM 的文档按三种用户类型组织：
 
 ### 2. Consumer 开发者：我想写自己的逻辑
 
-你想在推理过程中插入自己的代码，比如读取 hidden states 做分析、导出数据、或者实现一个新的 side-train 算法。
+你想在推理过程中插入自己的代码，比如读取 hidden states 做分析、导出数据、实现 runtime adaptation，或者实现新的 sampler-guidance 算法。
 
 **入口**：
 1. [安装指南](getting-started/installation.md)
 2. [架构详解](developer-guides/architecture.md) — 理解数据是怎么从 vLLM 里流出来的
 3. [写你的第一个 Consumer](getting-started/write-your-first-consumer.md)
-4. [Consumer 调试指南](developer-guides/debugging.md)
+4. [Consumer 投递模式](developer-guides/consumer-delivery-modes.md)
+5. [Consumer 调试指南](developer-guides/debugging.md)
 
 ### 3. Contributor：我想改 tLLM 本身
 

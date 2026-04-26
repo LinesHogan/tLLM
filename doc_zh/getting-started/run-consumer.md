@@ -27,7 +27,7 @@ tLLM 内置了几个 consumer，其中功能最完整的是 **ESamp**。这篇�
 
 ## 示例：运行 ESamp
 
-ESamp 是一个在生成过程中做 side-train 的 consumer。它在旁路训练一个轻量级网络，用浅层 hidden 预测深层 hidden，并可选地用预测结果干预采样分布。
+ESamp 是一个在生成过程中做 runtime adaptation 和 sampler guidance 的 consumer。它可以训练一个轻量级网络，用浅层 hidden 预测深层 hidden，并可选地用预测结果干预采样分布。
 
 ### 最小示例
 
@@ -40,9 +40,9 @@ python starter.py
 2. 创建 `ESampConsumer` 实例
 3. 把 consumer 注册到 tLLM runtime
 4. 并行生成 16 条回答
-5. 在生成过程中做 side-train
+5. 在生成过程中运行 ESamp 的训练机制
 
-输出末尾会有 consumer 的统计信息：`loss_count` 和 `loss_avg`。如果 `loss_count > 0`，说明 side-train 确实发生了。
+输出末尾会有 consumer 的统计信息：`loss_count` 和 `loss_avg`。如果 `loss_count > 0`，说明 ESamp 的训练机制确实运行了。
 
 缩短输出：
 
@@ -52,22 +52,19 @@ python starter.py --max-new-tokens 32
 
 ### 关键代码结构
 
-打开 `starter.py`，核心结构如下。这里没有直接手写 `ESampConsumer(...)` 和 runtime 注册逻辑，而是走 `esamp_support.configure_esamp_runtime(...)`。这样做的好处是：ESamp 的配置、runtime 状态、sampler provider、request mapping 都由同一个入口处理，示例代码不会和 tLLM 内部实现绑得太死。
+打开 `starter.py`，核心结构如下。通用概念是显式创建 `ESampConsumer(...)`，再通过 `register_consumer(...)` 注册；`starter.py` 里的 workflow helper 只是为了让 demo 和 benchmark 少写样板代码。
 
 ```python
 from vllm import SamplingParams
 
-from tllm import make_llm
+from tllm import make_llm, register_consumer
+from tllm.consumers.esamp import ESampConsumer, ESampConsumerConfig
 from tllm.runtime import residual_runtime as runtime
 from tllm.workflows import esamp_support
 
 # 1. 配置 ESamp，并把 consumer 交给 runtime
-consumer = esamp_support.configure_esamp_runtime(
+consumer = ESampConsumer(ESampConsumerConfig(
     graph_scratch_rows=64,
-    tap_layer_paths=[
-        "model.model.layers[0].input_layernorm",
-        "model.model.layers[-1].input_layernorm",
-    ],
     source_layer_path="model.model.layers[0].input_layernorm",
     target_layer_path="model.model.layers[-1].input_layernorm",
     enable_esamp_training=True,
@@ -81,7 +78,8 @@ consumer = esamp_support.configure_esamp_runtime(
     enable_distiller_intervention=True,
     distiller_beta=0.1,
     distiller_sampler_backend="post_filter_exact",
-)
+))
+register_consumer(consumer)
 
 # 2. 创建 vLLM 实例。tLLM 会在这里安装 vLLM v1 runtime patch
 llm = make_llm(
@@ -108,7 +106,7 @@ outputs = esamp_support.run_generate_with_request_mapping(
     request_sample_indices=list(range(16)),
 )
 
-# 4. 排空 side-train 队列，读取统计
+# 4. 排空 ESamp 异步队列，读取统计
 runtime.synchronize_esamp()
 stats = runtime.read_and_reset_esamp_stats(sync=True)
 print(stats)
@@ -156,14 +154,14 @@ python -m tllm.workflows.benchmarks.per_request_esamp_benchmark \
 |------|-----|-------------|
 | `--model-name` | `Qwen/Qwen2.5-0.5B-Instruct` | 0.5B 是小模型，加载快、适合快速验证。换成更大的模型时数字会变，但 ratio 的观察方法不变 |
 | `--dtype` | `bfloat16` | 当前主流 GPU 支持，比 fp16 更稳定 |
-| `--gpu-memory-utilization` | `0.5` | vLLM 最多占 50% 显存，剩下给 side-train。如果显存充裕可以提高到 0.7~0.8 |
+| `--gpu-memory-utilization` | `0.5` | vLLM 最多占 50% 显存，剩下给 ESamp 训练机制。如果显存充裕可以提高到 0.7~0.8 |
 | `--max-model-len` | `512` | 限制序列长度。如果 `sampling_n` 高或 batch 大，可能需要增大到 1024 |
 
 **Benchmark 行为**
 | 参数 | 值 | 为什么这样设 |
 |------|-----|-------------|
-| `--benchmark-batch-size` | `8` | 8 个请求并行。batch size 越大吞吐越高，但 side-train 压力也越大 |
-| `--benchmark-max-new-tokens` | `256` | 每个请求最多生成 256 个 token。decode step 越多，side-train 的总训练量越大 |
+| `--benchmark-batch-size` | `8` | 8 个请求并行。batch size 越大吞吐越高，但 ESamp 训练压力也越大 |
+| `--benchmark-max-new-tokens` | `256` | 每个请求最多生成 256 个 token。decode step 越多，ESamp 训练机制的总训练量越大 |
 | `--benchmark-warmup-rounds` | `1` | 先跑 1 轮 warmup，排除冷启动和 CUDA cache 的影响 |
 | `--benchmark-rounds` | `2` | 正式跑 2 轮取平均。数字小是因为主要用来验证功能，正式报告建议 5~10 轮 |
 | `--benchmark-ignore-eos` | | 忽略 EOS，强制生成满 256 个 token。这样不同 run 之间生成长度一致，结果可比 |
@@ -173,19 +171,19 @@ python -m tllm.workflows.benchmarks.per_request_esamp_benchmark \
 **采样配置**
 | 参数 | 值 | 为什么这样设 |
 |------|-----|-------------|
-| `--sampling-n` | `16` | 每个 prompt 并行采样 16 条。`n` 越大，side-train 处理的行越多，吞吐压力越大 |
+| `--sampling-n` | `16` | 每个 prompt 并行采样 16 条。`n` 越大，ESamp 训练机制处理的行越多，吞吐压力越大 |
 | `--sampling-temperature` | `0.8` | 标准 temperature |
 | `--sampling-top-p` | `0.95` | nucleus sampling 阈值 |
 | `--sampling-top-k` | `-1` | 不限制 top-k |
 
-**Side-train 配置**
+**ESamp 训练机制配置**
 | 参数 | 值 | 为什么这样设 |
 |------|-----|-------------|
 | `--distiller-lr` | `1e-3` | side model 的学习率。这个值对收敛速度影响大，但不是吞吐的主要瓶颈 |
 | `--model-bank-flush-interval` | `1` | 每 1 个 step flush 一次。interval 越大吞吐越高（减少 optimizer step 频率），但 loss 可能变差 |
 | `--model-bank-init-method` | `ffn_fast_svd` | Qwen 模型推荐的初始化方式。不同模型结构可能需要换别的 |
 | `--trajectory-topk` | `1` | 每个 step 只保留 top-1 轨迹用于训练 |
-| `--model-bank-train-cudagraph` | | 对 side-train 的 forward/backward 捕获 CUDA graph，减少 kernel launch 开销 |
+| `--model-bank-train-cudagraph` | | 对 ESamp distiller update 的 forward/backward 捕获 CUDA graph，减少 kernel launch 开销 |
 | `--run-model-bank-case` | | 只跑 model-bank 模式。如果不加，会同时跑 single、per-request、model-bank 三种模式 |
 
 ### 读结果
@@ -221,4 +219,5 @@ ESamp 是内置 consumer 中最复杂的一个。如果你跑通了 ESamp，其�
 
 - 想深入了解 ESamp 的内部设计：[案例：ESamp 的 Consumer 设计](../developer-guides/esamp-design.md)
 - 想了解 ESamp 的完整参数列表：[ESamp 用法与参数](../reference/esamp-usage.md)
+- 想理解普通接口和高级接口的区别：[Consumer 投递模式](../developer-guides/consumer-delivery-modes.md)
 - 想写自己的 consumer：[写你的第一个 Consumer](write-your-first-consumer.md)

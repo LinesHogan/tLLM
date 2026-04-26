@@ -28,7 +28,7 @@ tLLM 的核心设计是把"提取数据"和"使用数据"拆开：
 
 ### 问题 3：训练逻辑和推理混在一起
 
-在 forward 里直接启动 side-train backward，会阻塞主推理线程，吞吐崩掉。需要异步执行，但又必须和主 stream 正确同步。
+在 forward 里直接启动 ESamp distiller backward，会阻塞主推理线程，吞吐崩掉。需要异步执行，但又必须和主 stream 正确同步。
 
 ---
 
@@ -109,7 +109,7 @@ vLLM 执行模型推理。在 consumer 声明的 layer 上，runtime 的 hook �
 
 **Step 4：Feedback（可选）**
 
-如果 consumer 需要 step 末尾动作，或者实现了 `apply_feedback()`：
+如果 consumer 需要 step 末尾动作，或者实现了 `on_step_end()`：
 - 在 step 末尾触发 feedback
 - ESamp 在这里排队 delayed backward 到 side stream
 
@@ -133,7 +133,7 @@ Producer 的做法：
 1. 读取 `logits_indices[i]` —— 第 i 个请求的采样行在 packed tensor 中的位置
 2. 筛选出 `is_decode_req=True` 的请求
 3. 把这些行索引写入固定 GPU buffer（`decode_row_idx`）
-4. 在 hook 中用 `index_select(..., out=decode_h1)` gather 到固定 buffer
+4. 在 hook 中用 `index_select(..., out=decode_hidden_rows_buffer)` gather 到固定 buffer
 5. 用 `valid_mask` 标记有效行
 
 为什么用固定 buffer？因为 CUDA Graph 回放时不能每步分配新 tensor。
@@ -175,7 +175,7 @@ class MyConsumer(BaseConsumer):
         # 你的处理逻辑
 ```
 
-如果需要 step 末尾动作（drain 队列、启动 backward），再实现 `apply_feedback(ctx)`。
+如果需要 step 末尾动作（drain 队列、启动 backward），再实现 `on_step_end(ctx)`。
 
 完整的扩展教程见 [写你的第一个 Consumer](../getting-started/write-your-first-consumer.md)。
 

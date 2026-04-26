@@ -36,7 +36,7 @@ The general process of mapping packed tensor rows back to prompt, sample, and ph
 
 ## Model Bank
 
-An ESamp parameter layout where active requests are assigned to fixed slots. It reduces launch overhead and supports CUDA Graph acceleration for side-training.
+An ESamp parameter layout where active requests are assigned to fixed slots. It reduces launch overhead and supports CUDA Graph acceleration for ESamp's distiller update path.
 
 ## Phase
 
@@ -87,13 +87,13 @@ The hidden-state stream between model blocks. Exposed through the `residual_stre
 
 Context passed to consumers. It can include `runner`, `model`, `device`, `main_stream`, `is_compiling`, `uses_cudagraph`, and `event_name`.
 
-## Side-Train
+## Runtime Adaptation
 
-A pattern where captured hidden states are used to train or adapt a small model during generation, often on a side CUDA stream.
+A pattern where captured runtime data is used to adapt auxiliary state during generation, often on a side CUDA stream. ESamp's distiller training mechanism is one example.
 
 ## Source Layer / Target Layer
 
-In side-training, the source layer provides input hidden states; the target layer provides supervision.
+In ESamp, the source layer provides input hidden states; the target layer provides supervision.
 
 ## Tap Layer
 
@@ -106,7 +106,7 @@ The declared timing of a `ConsumerFlow`:
 - `background`: async background work.
 - `same_step`: must affect the current step.
 - `next_step`: result affects a later step.
-- `out_of_band_train`: training-specific side-stream work.
+- `out_of_band`: step-end async side-stream work.
 
 ## Related Docs
 

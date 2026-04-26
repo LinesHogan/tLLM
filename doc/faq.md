@@ -49,7 +49,7 @@ Common cases:
 
 - Model load OOM: reduce `--gpu-memory-utilization`.
 - High `sampling_n`: increase `--max-model-len` or lower `n`.
-- Side-training OOM: lower `--distiller-hidden-dim` or `--model-bank-rank`.
+- ESamp training OOM: lower `--distiller-hidden-dim` or `--model-bank-rank`.
 
 ### CUDA Graph capture errors?
 
@@ -88,21 +88,21 @@ Consumers should prefer this public surface over raw runtime events.
 
 DummyConsumer is an async hidden-read/export demo, not a production algorithm. It shows how to read `residual_stream + request_meta`, copy hidden rows to CPU without blocking, and drain work safely.
 
-## Side-Training
+## ESamp Training Mechanism
 
-### Does side-training require `enforce_eager`?
+### Does ESamp training require `enforce_eager`?
 
-No. `--enforce-eager` disables vLLM CUDA Graph and torch.compile paths, which is useful for debugging. It should not be treated as a requirement for side-training.
+No. `--enforce-eager` disables vLLM CUDA Graph and torch.compile paths, which is useful for debugging. It should not be treated as a requirement for ESamp training.
 
 The preferred production shape is:
 
 - Keep layer hooks lightweight.
 - Schedule distiller prediction at `compute_logits`.
-- Run training in an `out_of_band_train` side stream.
+- Run ESamp distiller updates in the `out_of_band` window on a side stream.
 - Preserve vLLM graph/compile optimizations where possible.
 
 ### When should I use model-bank mode?
 
-Use model-bank when many active requests each need side-training state. It assigns requests to fixed slots and batches training work, reducing launch overhead and enabling CUDA Graph replay for the side-training path.
+Use model-bank when many active requests each need ESamp training state. It assigns requests to fixed slots and batches training work, reducing launch overhead and enabling CUDA Graph replay for the ESamp training path.
 
 Use `single` for quick checks. Use `per-request` mainly for debugging or small fixed request counts.

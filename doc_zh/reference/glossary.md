@@ -22,7 +22,7 @@ Consumer 对外声明自身需求的方式。一个 Consumer 可以声明多个 
 
 - **reads**：需要读取哪些 port（如 `residual_stream`、`request_meta`）
 - **writes**：需要写入哪些 port（如 `cpu_export`）
-- **window**：执行时机（`background`、`same_step`、`next_step`、`out_of_band_train`）
+- **window**：执行时机（`background`、`same_step`、`next_step`、`out_of_band`）
 - **bundle_key**：runtime 如何聚合数据帧为一个完整 bundle
 
 定义见 `tllm/ports/base.py`。
@@ -157,17 +157,15 @@ Consumer 通常只需要把它当作辅助上下文，不需要深入理解每�
 
 ---
 
-## Side-train
+## Runtime adaptation
 
-在推理过程中使用捕获到的 hidden states 进行附加训练或自适应计算的模式。
-
-典型场景：用一个轻量级网络从浅层 hidden 预测深层 hidden，在推理的 side stream 上异步训练，与主推理流水线重叠执行。
+在推理过程中使用捕获到的 runtime 数据更新辅助状态的模式，通常放在 side stream 上和主推理流水线重叠执行。ESamp 的 distiller 训练机制是其中一个例子。
 
 ---
 
 ## Source layer / Target layer
 
-Side-train 中的一对概念：
+ESamp 中的一对概念：
 - **Source layer**：产生输入 hidden 的层（默认第一层）
 - **Target layer**：产生监督目标 hidden 的层（默认最后一层）
 
@@ -185,7 +183,7 @@ ConsumerFlow 的执行时机声明：
 - `background` — 异步后台执行，不阻塞主推理
 - `same_step` — 当前 step 内同步完成
 - `next_step` — 结果在下一步生效
-- `out_of_band_train` — 训练专用窗口，完全在 side stream 上异步
+- `out_of_band` — step 末尾异步 side-stream work
 
 ---
 

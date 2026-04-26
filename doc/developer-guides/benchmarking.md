@@ -66,5 +66,6 @@ If throughput drops sharply, check in this order:
 ## Next Steps
 
 - [ESamp Usage](../reference/esamp-usage.md)
+- [Consumer Delivery Modes](consumer-delivery-modes.md)
 - [Validation](validation.md)
 - [Debugging](debugging.md)

@@ -4,11 +4,11 @@ This is a command reference for ESamp. It focuses on how to run it, what the par
 
 For design background, read [ESamp Design](../developer-guides/esamp-design.md).
 
-Programmatic integrations register `ESampConsumer` through `configure_esamp_runtime()` before calling `llm.generate(...)`.
+Programmatic integrations create `ESampConsumer`, register it with `tllm.register_consumer(...)`, then call `llm.generate(...)`. `configure_esamp_runtime()` remains a workflow helper for benchmarks and short demos.
 
 ## Functional Check
 
-Before benchmarking, first confirm that side-training runs and loss appears:
+Before benchmarking, first confirm that ESamp training mechanism runs and loss appears:
 
 ```bash
 python -m tllm.workflows.repro.repro_esamp_loss \
@@ -99,11 +99,11 @@ Use it after the torch backend already works. If it fails or regresses, return t
 | `--source-layer-path` | Distiller input hidden layer | Early layer |
 | `--target-layer-path` | Training target hidden layer | Late layer |
 | `--distiller-hidden-dim` | Side model hidden width | Tune for quality/cost |
-| `--distiller-lr` | Side-training learning rate | `1e-3` |
+| `--distiller-lr` | ESamp distiller learning rate | `1e-3` |
 | `--model-bank-rank` | Low-rank model-bank rank | `64` |
 | `--model-bank-flush-interval` | Optimizer flush interval | `1` for strict training |
 | `--model-bank-init-method` | Initialization method | `ffn_fast_svd` for Qwen paths |
-| `--model-bank-train-cudagraph` | Capture side-training graph | Recommended for benchmark paths |
+| `--model-bank-train-cudagraph` | Capture the ESamp distiller update graph | Recommended for benchmark paths |
 | `--enable-distiller-intervention` | Enable sampler guidance | Off unless needed |
 | `--distiller-beta` | Guidance strength | Start with `0.1` |
 | `--distiller-sampler-backend` | Guidance backend | Keep `post_filter_exact` unless experimenting |

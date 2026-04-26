@@ -71,6 +71,8 @@ def flows(self):
 - `role`：在 `bundle.entries` 里的 key 名。这里 `"hidden"` 意味着 `bundle.entries["hidden"]` 能拿到数据
 - `window="background"`：异步执行，不阻塞主推理流。如果你的 consumer 要改 logits 影响采样，用 `"same_step"`
 - `bundle_key`：runtime 用哪些字段把多个 port 的数据聚合成一个 bundle。通常 `"engine_step_id"` + `"phase"` 就够了
+- 默认投递模式是 `delivery="bundle"`，entries 按 borrowed view 使用。除非 profiling
+  证明你的 consumer 需要 device-lease 投递，否则保持这个默认值。
 
 ## 第三步：接收并处理数据
 
@@ -125,11 +127,11 @@ def synchronize(self):
 在你的入口代码里：
 
 ```python
-from tllm.runtime import residual_runtime as runtime
+from tllm import register_consumer
 from tllm.consumers.my_consumer import MyConsumer, MyConsumerConfig
 
 consumer = MyConsumer(MyConsumerConfig())
-runtime.register_dispatch_consumer(consumer)
+register_consumer(consumer)
 
 # 然后照常调用 vLLM generate
 outputs = llm.generate(prompts, sampling_params)
@@ -164,6 +166,7 @@ python -m pytest -q test/test_dummy_consumer_unit.py
 
 ## 下一步
 
+- 想理解普通接口和高级接口的区别：[Consumer 投递模式](../developer-guides/consumer-delivery-modes.md)
 - 想测性能影响：[性能基准测试](../developer-guides/benchmarking.md)
 - 怀疑数据不对：[正确性验证](../developer-guides/validation.md)
 - 出了 bug：[调试指南](../developer-guides/debugging.md)

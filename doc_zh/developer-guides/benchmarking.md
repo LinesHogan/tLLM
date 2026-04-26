@@ -86,4 +86,5 @@ DummyConsumer 的默认配置不是"优化版"，而是"看看框架 overhead �
 ## 下一步
 
 - 跑 ESamp 的 benchmark：[ESamp 用法与参数](../reference/esamp-usage.md)
+- 理解普通和高级投递路径：[Consumer 投递模式](consumer-delivery-modes.md)
 - 验证功能没坏：[正确性验证](validation.md)

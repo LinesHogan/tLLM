@@ -55,7 +55,7 @@ Debug logging is fine temporarily. Do not leave hot-path logging in committed co
 For DummyConsumer-style async workers:
 
 - `consume_bundle()` should enqueue work only.
-- `apply_feedback()` may drain at a controlled interval.
+- `on_step_end()` may drain at a controlled interval.
 - `synchronize()` must drain leftovers at the end.
 - When the queue is full, prefer dropping work or applying non-hot-path backpressure.
 

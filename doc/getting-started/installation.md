@@ -62,13 +62,16 @@ For most users, the simplest verification is the ESamp starter:
 python starter.py --max-new-tokens 32
 ```
 
-This loads `Qwen/Qwen2.5-7B-Instruct`, generates 16 answers in parallel, and runs ESamp side-training alongside generation. A healthy run ends with statistics similar to:
+This loads `Qwen/Qwen2.5-7B-Instruct`, generates 16 answers in parallel, and runs
+ESamp's training mechanism alongside generation. A healthy run ends with
+statistics similar to:
 
 ```text
 ESamp stats: loss_avg=... loss_count=... answers=16 ...
 ```
 
-`loss_count > 0` means the consumer received hidden states and side-training actually ran.
+`loss_count > 0` means the consumer received hidden states and ESamp's training
+mechanism actually ran.
 
 If you see `ModuleNotFoundError`, check that the virtual environment is active. If you hit OOM, reduce `--gpu-memory-utilization` or temporarily switch to `Qwen/Qwen2.5-0.5B-Instruct`.
 

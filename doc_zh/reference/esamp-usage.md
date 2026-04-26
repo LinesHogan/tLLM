@@ -6,7 +6,7 @@
 
 这篇文档覆盖三类用法：
 
-1. **功能验证** —— 确认 side-train 路径能跑通、loss 会出现
+1. **功能验证** —— 确认 ESamp 训练路径能跑通、loss 会出现
 2. **吞吐 benchmark** —— 测量 consumer 对推理速度的影响
 3. **采样干预** —— 开启 distiller 对生成结果的干预
 
@@ -14,7 +14,7 @@
 
 ## 功能验证
 
-在测吞吐之前，必须先确认 side-train 路径真的在工作。如果 loss 根本不出现，benchmark 的结果没有意义。
+在测吞吐之前，必须先确认 ESamp 训练路径真的在工作。如果 loss 根本不出现，benchmark 的结果没有意义。
 
 ```bash
 python -m tllm.workflows.repro.repro_esamp_loss \
@@ -37,7 +37,7 @@ python -m tllm.workflows.repro.repro_esamp_loss \
 
 常见失败原因：
 - `source-layer-path` 或 `target-layer-path` 写错了（模型结构不同，路径可能不一样）
-- GPU 显存不足，side-train 没有启动
+- GPU 显存不足，ESamp 训练没有启动
 - vLLM 版本不兼容，hook 没有正确安装
 
 ## 吞吐 benchmark
@@ -75,7 +75,7 @@ python -m tllm.workflows.benchmarks.per_request_esamp_benchmark \
 - **模型与显存**：控制模型、精度、显存分配
 - **Benchmark 行为**：控制 batch size、生成长度、warmup/rounds
 - **采样配置**：temperature、top-p、top-k、并行采样数 `n`
-- **Side-train 配置**：学习率、model-bank 参数、CUDA graph
+- **ESamp 训练配置**：学习率、model-bank 参数、CUDA graph
 
 真正关心的指标是相对比例：
 
@@ -160,7 +160,7 @@ new_logit = (1 + beta) * llm_logit - beta * distiller_logit
 | `--model-bank-rank` | model-bank 低秩分解的 rank | `64` | 模型大时增大；想减少参数量和计算时减小 |
 | `--model-bank-flush-interval` | 多久执行一次 optimizer step | `1` | 吞吐敏感时增大（但 loss 可能变差）；loss 敏感时保持 1 |
 | `--model-bank-init-method` | side model 的初始化方式 | `ffn_fast_svd` | 不同模型结构可能需要换别的初始化 |
-| `--model-bank-train-cudagraph` | 对 side-train 捕获 CUDA graph | 默认关闭 | 正式 benchmark 建议开启，减少 kernel launch 开销 |
+| `--model-bank-train-cudagraph` | 对 ESamp distiller update 捕获 CUDA graph | 默认关闭 | 正式 benchmark 建议开启，减少 kernel launch 开销 |
 | `--enable-distiller-intervention` | 开启采样干预 | 默认关闭 | 需要 distiller 影响生成时开启 |
 | `--distiller-beta` | 干预强度 | `0.1` | 效果太弱时增大；效果太强或输出质量下降时减小 |
 | `--distiller-sampler-backend` | 干预的计算方式 | `post_filter_exact` | 除非你知道自己在做什么，否则保持默认 |

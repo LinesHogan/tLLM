@@ -60,10 +60,10 @@ Consumer 对外声明需求时使用的接口定义。
 
 - `base.py` — 通用 consumer 接口（`flows()`、`consume_bundle()`）
 - `dummy/` — 最小示例，适合学习如何写 consumer
-- `esamp/` — 内置的 side-train consumer
+- `esamp/` — 内置的 adaptive/guidance consumer
   - `consumer.py` — `ESampConsumer`，BaseConsumer 包装层
   - `engine.py` — `ESampTrainEngine`，训练引擎与其本地 helper
-  - `model.py` — 低秩 side-train 模型定义
+  - `model.py` — ESamp 训练机制使用的低秩 distiller 模型定义
   - `template.py` — model-bank 初始化模板与抽取逻辑
 
 **什么时候看这里**：从 dummy 复制新 consumer，或者排查 ESamp 训练问题。

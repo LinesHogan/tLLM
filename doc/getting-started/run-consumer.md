@@ -12,7 +12,10 @@ After reading it, you should understand:
 
 A consumer is code that receives data captured from the LLM runtime. It can read hidden states, request metadata, logits, or other ports, then perform analysis, export, training, or guidance.
 
-tLLM ships with several consumers. The most complete one is **ESamp**, a side-training consumer that trains a lightweight distiller from shallow hidden states to deeper hidden states, and can optionally use that distiller to guide sampling.
+tLLM ships with several consumers. The most complete one is **ESamp**, an
+adaptive/guidance consumer that can train a lightweight distiller from shallow
+hidden states to deeper hidden states, and can optionally use that distiller to
+guide sampling.
 
 ## General Flow
 
@@ -37,7 +40,7 @@ This command:
 1. Loads `Qwen/Qwen2.5-7B-Instruct`.
 2. Configures ESamp.
 3. Generates 16 answers in parallel.
-4. Runs side-training during generation.
+4. Runs ESamp's training mechanism during generation.
 5. Prints `loss_count` and `loss_avg`.
 
 For a shorter run:
@@ -46,25 +49,22 @@ For a shorter run:
 python starter.py --max-new-tokens 32
 ```
 
-`loss_count > 0` means side-training actually happened.
+`loss_count > 0` means ESamp's training mechanism actually ran.
 
 ## Key Code Shape
 
-`starter.py` uses `esamp_support.configure_esamp_runtime(...)` instead of manually instantiating `ESampConsumer` and registering it. That helper keeps ESamp configuration, runtime state, sampler provider setup, and request mapping in one place.
+The generic shape is explicit consumer registration. `starter.py` uses the ESamp workflow helper for a compact demo, but the conceptual API is still `ESampConsumer(...)` plus `register_consumer(...)`.
 
 ```python
 from vllm import SamplingParams
 
-from tllm import make_llm
+from tllm import make_llm, register_consumer
+from tllm.consumers.esamp import ESampConsumer, ESampConsumerConfig
 from tllm.runtime import residual_runtime as runtime
 from tllm.workflows import esamp_support
 
-consumer = esamp_support.configure_esamp_runtime(
+consumer = ESampConsumer(ESampConsumerConfig(
     graph_scratch_rows=64,
-    tap_layer_paths=[
-        "model.model.layers[0].input_layernorm",
-        "model.model.layers[-1].input_layernorm",
-    ],
     source_layer_path="model.model.layers[0].input_layernorm",
     target_layer_path="model.model.layers[-1].input_layernorm",
     enable_esamp_training=True,
@@ -78,7 +78,8 @@ consumer = esamp_support.configure_esamp_runtime(
     enable_distiller_intervention=True,
     distiller_beta=0.1,
     distiller_sampler_backend="post_filter_exact",
-)
+))
+register_consumer(consumer)
 
 llm = make_llm(
     model_name="Qwen/Qwen2.5-7B-Instruct",
@@ -152,10 +153,11 @@ ratio = model_bank_on / single_off
 | `model_bank_on` | Throughput with ESamp enabled | Compare it to `single_off` |
 | `ratio` | Relative overhead | Depends on model size, sampler settings, intervention, and graph replay; optimized 7B min-p paths have reached the 95%+ target range |
 | `loss_count` | Must be greater than zero | Zero means training did not run, regardless of throughput |
-| `loss_avg` | Average side-training loss | Should stay in a reasonable range |
+| `loss_avg` | Average training loss | Should stay in a reasonable range |
 
 ## Next Steps
 
 - [ESamp Design](../developer-guides/esamp-design.md)
 - [ESamp Usage](../reference/esamp-usage.md)
+- [Consumer Delivery Modes](../developer-guides/consumer-delivery-modes.md)
 - [Write Your First Consumer](write-your-first-consumer.md)

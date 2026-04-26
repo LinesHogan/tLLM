@@ -50,7 +50,7 @@ Port 是 consumer 向 runtime 声明"我需要什么数据"的方式。Consumer 
 
 典型用途：
 
-- side-train / ESamp
+- ESamp adaptive/guidance 路径
 - hidden export
 - residual delta 写回
 

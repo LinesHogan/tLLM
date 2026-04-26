@@ -43,7 +43,7 @@ python -m pytest -q
 | `test_decode_localization_unit.py` | decode row 定位是否正确 | 改了 producer 或 localization 逻辑 |
 | `test_consumer_dispatch_contracts_unit.py` | PortBundle、ConsumerFlow 契约 | 改了 port 定义或 bundle 组装 |
 | `test_dummy_consumer_unit.py` | dummy consumer 最小行为 | 改了 consumer 基类或公共接口 |
-| `test_esamp_per_request_unit.py` | side-train step 级行为 | 改了 side-train 训练逻辑 |
+| `test_esamp_per_request_unit.py` | ESamp 训练 step 级行为 | 改了 ESamp 训练逻辑 |
 | `test_esamp_model_bank_backend_unit.py` | model bank 训练路径 | 改了 model-bank 参数管理 |
 
 最小单测集（只改纯逻辑时）：
@@ -109,7 +109,7 @@ benchmark 参数说明：
 | 参数 | 值 | 为什么这样设 |
 |------|-----|-------------|
 | `--benchmark-batch-size` | `8` | 标准 batch size，能测出 batch 效应 |
-| `--benchmark-max-new-tokens` | `256` | 够长的 decode 序列，让 side-train 有充分训练步数 |
+| `--benchmark-max-new-tokens` | `256` | 够长的 decode 序列，让 ESamp 有充分训练步数 |
 | `--distiller-lr` | `1e-3` | 标准学习率 |
 | `--model-bank-train-cudagraph` | | 测试 CUDA graph 训练路径是否正常 |
 | `--run-model-bank-case` | | 只跑 model-bank 模式，减少验证时间 |

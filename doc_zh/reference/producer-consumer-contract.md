@@ -22,22 +22,52 @@
    - `sample_idx`（支持 `n>1`）
    - prefill 时可附带 token offset
 
- 当前 capture 存储:
- - decode: `captured_decode[prompt_idx] -> List[Tensor]`
- - prefill: `captured_prefill[prompt_idx] -> List[Tensor]`
+ 当前 decode capture 使用按 resolved layer path 索引的 runtime tap buffer：
+ - `tap_decode_hidden[resolved_path] -> Tensor[rows, hidden_size]`
+
+ hook 会把本 step 的 decode rows 写入这些固定 buffer。旧的 producer helper 或 prefill
+ repro workflow 可能仍然使用按 prompt index 组织的存储，但现代 consumer delivery 应该
+ 通过 port 和 bundle 理解，而不是依赖那种内部存储形状。
 
  ### Consumer 输入
 
  Consumer 通过 `ConsumerFlow` 声明需求，通过 `consume_bundle(bundle, ctx)` 接收组装好的 `PortBundle`：
 
- - decode 本地化后的 hidden（`[rows, hidden_size]`, fp32）
- - 非有效行会被 `decode_valid_mask` 置零
- - 由主 stream 的 ready event 驱动 side stream
+ - decode 本地化后的 hidden（`[rows, hidden_size]`，dtype 跟捕获层一致）
+ - runtime 投递本 step 的 active rows；hook 内部仍使用固定 scratch buffer 以兼容 CUDA Graph replay
+ - 普通 bundle 的 tensor 按 borrowed view 理解，device lease 的生命周期见下文
 
  当前支持的读取方式：
  - 读取 `residual_stream` port 获取 source/target hidden
  - 读取 `request_meta` port 获取 request identity
- - 可选在 step 末尾通过 `apply_feedback(ctx)` 执行 delayed backward
+ - 可选在 step 末尾通过 `on_step_end(ctx)` 执行 delayed backward
+
+ `ConsumerFlow` 的默认投递元数据是 `delivery="bundle"` 和
+ `ownership="borrowed"`，对应标准的 bundle 分发路径。若 Consumer 已准备好
+ 直接消费 runtime 租借的 device tensor，可显式选择
+ `delivery="device_lease"` 与 `ownership="runtime_lease"`。ESamp 在这里应理解为
+ 一类 adaptive/guidance consumer，而不是 ESamp 训练机制本身的同义词。
+
+ 当前实现里的 device tensor lease 描述的是 runtime-owned tensor entries 和 active row
+ count。这些 entries 只保证在本次 `consume_bundle()` 调用期间有效，并且必须按只读
+ 数据使用；lease 会用 `lifetime="consume_call"` 明确表达这一点。lease 暂不携带
+ ready events，也不承诺 durable-buffer 生命周期；如果 consumer 需要在调用结束后继续
+ 持有数据，必须先拷贝到自己的 buffer。
+
+ 当前 `device_lease` 投递只覆盖 `bundle_key=("engine_step_id", "phase")` 的 decode
+ step bundle；读取类型支持 `residual_stream` 和可选的 `request_meta`。更广的 port
+ 覆盖和 durable staged-buffer lease 应该作为新的 contract revision 加入，而不是从
+ 当前实现中推断出来。
+
+ Flow 还可以用 `row_compaction` 声明行形状。默认是 `row_compaction="none"`，
+ 保留 decode row 的顺序和数量。`row_compaction="first_per_prompt"` 表示 runtime
+ 只给当前 decode step 中每个 prompt 的第一行。当 request metadata 以
+ `RowBatchMeta` 投递时，`row_ids` 记录这些行原本的 decode-row 位置。metadata 的行数
+ 匹配投递的 live rows。这是面向 per-prompt GPU consumer 的通用投递契约；ESamp
+ model-bank 会使用它，但 runtime 不会特判 ESamp。
+
+ 关于普通 bundle 路径和 device-lease 路径的教学式对比，见
+ [Consumer 投递模式](../developer-guides/consumer-delivery-modes.md)。
 
  ## 核心算法
 
@@ -54,9 +84,8 @@
  2. `row_idx = logits_indices[decode_positions]`
  3. 写入固定 buffer: `decode_row_idx`
  4. 写 `decode_valid_mask[:k] = 1`
- 5. 在捕获层 hook 中执行:
-    - `decode_h1 = scratch.index_select(0, decode_row_idx)`
-    - `decode_h1 *= decode_valid_mask`
+ 5. 在捕获层 hook 中按固定 buffer shape 执行 graph-safe gather
+ 6. 用 `decode_valid_mask` 清掉非 active rows
 
  ### Prefill localization（eager-first）
 

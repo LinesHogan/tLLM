@@ -6,11 +6,11 @@
 
 ## 这个 Consumer 要解决什么问题
 
-ESamp 是一个在 LLM 生成过程中做 **test-time training** 的 consumer。它想在每个 decode step 做这些事：
+ESamp 是一个在 LLM 生成过程中做 runtime adaptation 和 sampler guidance 的 consumer。它想在每个 decode step 做这些事：
 
 1. 拿到某个浅层的 hidden state（输入）
-2. 拿到某个深层的 hidden state（训练目标）
-3. 在线训练一个轻量级 distiller，学习从前者预测后者
+2. 拿到某个深层的 hidden state（监督目标）
+3. 在线更新一个轻量级 distiller，学习从前者预测后者
 4. 可选地，用 distiller 的预测结果干预下一个 token 的采样分布
 
 这些需求同时涉及：数据捕获、异步重计算、有状态训练、采样干预。它是一个很好的例子，用来展示 consumer 框架能支持到什么复杂度。
@@ -30,20 +30,45 @@ ConsumerFlow(
         ResidualStream.read(layer=-1, site="block_output", phase="decode", role="target"),
         RequestMeta.read(),
     ),
-    ...
+    window="out_of_band",
+    delivery="device_lease",
+    ownership="runtime_lease",
+    bundle_key=("engine_step_id", "phase"),
 )
 ```
 
-Runtime 负责：安装 layer hook、从 packed tensor 中定位行、按请求组装 bundle。ESamp 只关心 `bundle.entries["source"]` 和 `bundle.entries["target"]` 里有没有数据。
+Runtime 负责：安装 layer hook、从 packed tensor 中定位行、按请求组装 bundle。普通
+bundle 路径会把 tensor 作为 `bundle.entries["source"]` 这类直接 entry 投递；ESamp
+使用 device-lease 路径，所以 runtime 通常会通过 `bundle.entries["device_lease"]`
+投递这些 tensor。
 
-### 异步训练：out_of_band_train window
-
-Side-train 涉及矩阵乘和 optimizer step，不能在主推理流里同步做。ESamp 把 `window` 设为 `"out_of_band_train"`，表示这条 flow 是训练专用的异步路径：runtime 负责捕获 source/target hidden，ESamp 负责把它们送进 side stream 上的训练引擎。
+大多数 consumer 到普通 bundle contract 就够了。ESamp 选择高级投递 contract，是因为
+它的 tensor 留在 GPU 上，并且会交给 step 级 engine 继续使用：
 
 ```python
 ConsumerFlow(
     ...,
-    window="out_of_band_train",
+    window="out_of_band",
+    delivery="device_lease",
+    ownership="runtime_lease",
+    row_compaction="first_per_prompt",  # model-bank 路径
+    bundle_key=("engine_step_id", "phase"),
+)
+```
+
+在 `device_lease` 模式下，runtime 可以把 `DeviceTensorLease` 放到
+`bundle.entries["device_lease"]`。ESamp 仍然接受直接 tensor entry 作为小范围的
+测试和手动集成 fallback。model-bank 路径上的 `first_per_prompt` compaction 是 tLLM 的投递能力：runtime 把 bundle 塑造成 ESamp
+真正要训练的 per-prompt rows，但不改变 sampler guidance 所依赖的 full decode-row 状态。
+
+### 异步 adaptation：out_of_band window
+
+训练机制涉及矩阵乘和 optimizer step，不能在主推理流里同步做。ESamp 把 `window` 设为 `"out_of_band"`，表示这条 flow 会在 step 末尾触发异步 adaptation work：runtime 负责捕获 source/target hidden，ESamp 负责把它们送进 side stream 上的 distiller update pipeline。
+
+```python
+ConsumerFlow(
+    ...,
+    window="out_of_band",
 )
 ```
 
@@ -60,7 +85,7 @@ ESamp 想修改候选 token 的 logits。但 ESamp 自己不直接 patch vLLM �
 
 ### 有状态训练：Consumer 内部状态管理
 
-Side-train 需要维护模型参数、optimizer 状态、每个请求的 slot 映射。这些状态完全在 consumer 内部管理，runtime 不感知。
+ESamp 的训练机制需要维护模型参数、optimizer 状态、每个请求的 slot 映射。这些状态完全在 consumer 内部管理，runtime 不感知。
 
 ESamp 展示了三种典型的状态管理策略：
 
@@ -82,7 +107,7 @@ ESamp 展示了三种典型的状态管理策略：
 | `ESampTrainEngine` | 维护参数、forward/backward、model-bank 调度 | 纯内部实现，不依赖框架 |
 | `ESampSamplerModifierProvider` | 把 distiller 输出转成 logits delta | 面向通用 sampler bridge |
 
-Runtime 只认识 `ESampConsumer` 的公开 consumer 接口（`flows()`、`consume_bundle()`、`synchronize()`，以及 ESamp 为训练收尾实现的 `apply_feedback()`），还有 `ESampSamplerModifierProvider` 的 sampler 接口。`ESampTrainEngine` 对 runtime 完全不可见。
+Runtime 只认识 `ESampConsumer` 的公开 consumer 接口（`flows()`、`consume_bundle()`、`synchronize()`，以及 ESamp 为训练收尾实现的 `on_step_end()`），还有 `ESampSamplerModifierProvider` 的 sampler 接口。`ESampTrainEngine` 对 runtime 完全不可见。
 
 ## Decode Step 时序：Consumer 视角
 
@@ -93,7 +118,7 @@ Runtime 只认识 `ESampConsumer` 的公开 consumer 接口（`flows()`、`consu
 3. **LLM 进入 `compute_logits`** —— tLLM runtime 在这个边界触发 distiller no-grad precompute。这个时机比 sampler 早，又比 layer hook 更适合和 vLLM graph/compile 路径共存
 4. **Sampler bridge 调用 Provider** —— ESamp 根据 LLM 已过滤出的候选 token，计算 distiller logits，并按公式修饰候选 logits
 5. **vLLM 在修饰后 logits 上采样**
-6. **`execute_model.post` / side-train window** —— runtime 分发 bundle，ESamp 执行 delayed backward / model-bank flush
+6. **`execute_model.post` / adaptation window** —— runtime 分发 bundle，ESamp 执行 delayed backward / model-bank flush
 
 这里的关键观察是：consumer 框架允许你把逻辑拆到多个 hook 点（layer output、sampler、step end），而不是把所有事情塞在一个回调里。
 
@@ -108,6 +133,18 @@ ESamp 的调优经验中，最有复用价值的部分不是 ESamp 特有的参�
 - 不要在 `consume_bundle()` 里启动复杂 Python 调度或同步 drain worker
 - 可向量化的工作不要放在 Python 循环里
 - 状态管理策略（single/per-request/model-bank）的切换，往往比微优化代码更有影响
+- 拷贝次数是实现细节，不是 API 承诺。随着 runtime 演进，`device_lease` 可以是直接
+  view、strided view，也可以在某些模式下来自 staged tensor
+- 较长的 Python 片段本身不会强制 CUDA 同步，但会推迟下一步 decode enqueue。
+  Side-stream work 也可能和 vLLM kernel 竞争 SM、L2 和显存带宽。如果 tap-only 吞吐
+  已经低于 baseline，应该优先看 hook 操作和 stream 调度，而不是先假设 distiller
+  FLOPs 太大
+- ESamp 暴露了 `adaptation_stream_mode`，这是 ESamp engine 自己的调度旋钮，不是
+  tLLM 把某一种训练模式写进框架。`dual` 是默认 overlap 路径，`single` 把 ESamp
+  的 adaptation staging/training work 合到一个辅助 stream，`serial` 把 adaptation
+  work 放回当前 stream，主要用于诊断。在 vLLM 使用默认优先级 stream 的 CUDA
+  环境里，ESamp 往往没有“更低优先级”可用；真正有效的方向通常是减少热路径
+  capture/delivery work、减少 graph launch，或者做有预算的 adaptation queue
 
 ## 从 ESamp 到你自己的 Consumer
 
@@ -121,3 +158,6 @@ ESamp 展示了 consumer 框架的上限：你可以同时做数据捕获、异�
 4. 然后再逐步加入：异步 worker、状态管理、采样干预
 
 ESamp 是一个参考实现，不是模板。你不需要复制它的组件拆分，只需要理解框架提供了哪些机制，以及每个机制解决什么问题。
+
+普通 DummyConsumer 路径和 ESamp 高级路径的并排说明，见
+[Consumer 投递模式](consumer-delivery-modes.md)。

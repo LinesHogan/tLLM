@@ -54,18 +54,18 @@ MSE 验证失败说明 parallel 模式和 gold 模式下的 hidden states 存在
 常见 OOM 场景和应对：
 
 - **模型加载阶段 OOM**: 降低 `--gpu-memory-utilization`（默认 0.8，可降至 0.5~0.6）
-- **高 `sampling_n` 时 OOM**: `n=16` 等高采样场景下，sampling/sorting 路径的显存压力可能先于 side-train 达到瓶颈。增大 `--max-model-len` (建议 `>=512`) 或降低 `n`
-- **Side-train 训练阶段 OOM**: 降低 `--distiller-hidden-dim` 或 `--model-bank-rank`
+- **高 `sampling_n` 时 OOM**: `n=16` 等高采样场景下，sampling/sorting 路径的显存压力可能先于 ESamp 训练机制达到瓶颈。增大 `--max-model-len` (建议 `>=512`) 或降低 `n`
+- **ESamp 训练阶段 OOM**: 降低 `--distiller-hidden-dim` 或 `--model-bank-rank`
 
 ### CUDA Graph capture 相关的错误？
 
 常见原因：
 
-1. **把不 graph-safe 的逻辑放进 hook**: 例如在 layer forward hook 里启动复杂 Python 调度、创建 stream/event、或者做可能触发同步的操作。推荐做法是 hook 里只捕获和 staging，真正的 distiller precompute 放在 `compute_logits` 边界，训练分发放在 `execute_model.post` / `out_of_band_train` 路径
+1. **把不 graph-safe 的逻辑放进 hook**: 例如在 layer forward hook 里启动复杂 Python 调度、创建 stream/event、或者做可能触发同步的操作。推荐做法是 hook 里只捕获和 staging，真正的 distiller precompute 放在 `compute_logits` 边界，训练分发放在 `execute_model.post` / `out_of_band` 路径
 2. **`VLLM_DISABLE_COMPILE_CACHE=1` 导致 `FileNotFoundError`**: 在 vLLM 0.7.2 下这是已知问题，执行 `unset VLLM_DISABLE_COMPILE_CACHE`
 3. **`sampling_n` 过高触发 sampler CUDA assert**: 增大 `--max-model-len`
 
-调试时可以临时使用 eager 路径来缩小问题；但生产/benchmark 路径不应默认假设必须禁用 vLLM CUDA graph。当前 ESamp 对齐吞吐实验通常会开启 side-train 自己的 `--model-bank-train-cudagraph`，并尽量让主推理路径保留 vLLM 的 graph/compile 优化。
+调试时可以临时使用 eager 路径来缩小问题；但生产/benchmark 路径不应默认假设必须禁用 vLLM CUDA graph。当前 ESamp 对齐吞吐实验通常会开启 ESamp 训练机制自己的 `--model-bank-train-cudagraph`，并尽量让主推理路径保留 vLLM 的 graph/compile 优化。
 
 ---
 
@@ -111,17 +111,17 @@ DummyConsumer 是一个 async read/export hidden demo，不是生产 consumer。
 
 ---
 
-## Side-Train
+## ESamp 训练机制
 
-### `enforce-eager` 是什么？side-train 一定要用它吗？
+### `enforce-eager` 是什么？ESamp 训练一定要用它吗？
 
 `--enforce-eager` 是传给 vLLM 的参数，效果是禁用 CUDA graph 和 torch.compile，让所有算子以 eager 模式执行。
 
 它对调试很有用：当你怀疑问题来自 CUDA graph capture 或 torch.compile 时，先用 eager 路径跑通，可以快速判断是算法逻辑错了，还是 graph/compile 交互错了。
 
-但 side-train 不应该天然依赖 eager。更推荐的生产路径是：hook 里只做轻量捕获和 staging，把 distiller precompute 放到 `compute_logits` 边界，把训练放到 `out_of_band_train` side stream；在这个基础上尽量保留 vLLM 主推理的 graph/compile 优化。
+但 ESamp 训练不应该天然依赖 eager。更推荐的生产路径是：hook 里只做轻量捕获和 staging，把 distiller precompute 放到 `compute_logits` 边界，把训练放到 `out_of_band` side stream；在这个基础上尽量保留 vLLM 主推理的 graph/compile 优化。
 
-注意：`--enforce-eager` 控制的是 vLLM 主推理流水线。`--model-bank-train-cudagraph` 是 tLLM side-train 自己的训练 graph，两者独立。
+注意：`--enforce-eager` 控制的是 vLLM 主推理流水线。`--model-bank-train-cudagraph` 是 tLLM 中 ESamp 训练机制自己的训练 graph，两者独立。
 
 ### model-bank 模式何时使用？
 

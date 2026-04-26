@@ -68,7 +68,7 @@ For legacy event-style consumers, runtime may call:
 
 1. `consume(batch, ctx)` when a `HiddenBatch` exists.
 2. `on_tick(event_name, ctx)` for lifecycle events.
-3. `apply_feedback(ctx)` at `execute_model.post`.
+3. `on_step_end(ctx)` at `execute_model.post`.
 
 Flow-based consumers should generally use `consume_bundle(bundle, ctx)` instead.
 

@@ -15,10 +15,14 @@ Producer extracts:
   - `sample_idx`
   - optional token offsets for prefill.
 
-Capture storage currently separates:
+Current decode capture uses runtime tap buffers keyed by resolved layer path:
 
-- decode: `captured_decode[prompt_idx] -> List[Tensor]`
-- prefill: `captured_prefill[prompt_idx] -> List[Tensor]`
+- `tap_decode_hidden[resolved_path] -> Tensor[rows, hidden_size]`
+
+The hook writes localized decode rows into these fixed buffers. Older producer
+helpers may still use prompt-indexed storage for repro or prefill workflows, but
+modern consumer delivery should be understood through ports and bundles rather
+than through that internal storage shape.
 
 ## Consumer Input
 
@@ -35,6 +39,39 @@ Typical entries include:
 - optional sampler or export data
 
 Invalid padded rows are masked out through runtime-managed masks.
+
+`ConsumerFlow` delivery metadata defaults to `delivery="bundle"` and
+`ownership="borrowed"`, which is the standard bundle dispatch path.
+Consumers can opt into `delivery="device_lease"` with
+`ownership="runtime_lease"` when they are prepared to consume runtime-leased
+device tensors directly. ESamp is one example of an adaptive/guidance
+consumer that may use this opt-in path; it should not be treated as a synonym
+for ESamp's training mechanism.
+
+In the current implementation, a device tensor lease describes runtime-owned
+tensor entries and active row count. The entries are valid for the
+`consume_bundle()` call and must be treated as read-only. The lease advertises
+this as `lifetime="consume_call"`. It does not yet carry ready events or
+durable-buffer lifetime guarantees; consumers that need to retain data beyond
+the call must copy it into their own buffers.
+
+Current `device_lease` delivery is limited to decode step bundles with
+`bundle_key=("engine_step_id", "phase")`; it supports `residual_stream` reads
+and optional `request_meta`. Broader port coverage and durable staged-buffer
+leases should be added as new contract revisions rather than inferred from this
+first implementation.
+
+Flows may also declare row shaping with `row_compaction`. The default is
+`row_compaction="none"`, which preserves decode-row order and cardinality.
+`row_compaction="first_per_prompt"` asks runtime to deliver only the first row
+for each prompt in the current decode step. When request metadata is delivered
+as `RowBatchMeta`, `row_ids` records the original decode-row positions.
+Metadata cardinality matches the delivered live rows. This is a generic
+delivery contract for per-prompt GPU consumers; ESamp model-bank uses it, but
+runtime does not special-case ESamp.
+
+For a teaching-oriented comparison of the two modes, read
+[Consumer Delivery Modes](../developer-guides/consumer-delivery-modes.md).
 
 ## Decode Localization
 

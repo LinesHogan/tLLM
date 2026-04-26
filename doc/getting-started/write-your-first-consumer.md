@@ -66,6 +66,9 @@ Important fields:
 - `role` becomes the key in `bundle.entries`.
 - `window="background"` means asynchronous processing.
 - `bundle_key` tells the runtime how to group frames into one complete bundle.
+- The default delivery mode is `delivery="bundle"` with borrowed entries. Keep
+  that default unless profiling shows that your consumer needs device-lease
+  delivery.
 
 ## 3. Consume the Bundle
 
@@ -114,11 +117,11 @@ The rule of thumb: enqueue in `consume_bundle()`, process later.
 For simple consumers, direct registration is fine:
 
 ```python
-from tllm.runtime import residual_runtime as runtime
+from tllm import register_consumer
 from tllm.consumers.my_consumer import MyConsumer, MyConsumerConfig
 
 consumer = MyConsumer(MyConsumerConfig())
-runtime.register_dispatch_consumer(consumer)
+register_consumer(consumer)
 
 outputs = llm.generate(prompts, sampling_params)
 
@@ -126,7 +129,7 @@ consumer.synchronize()
 stats = consumer.read_stats()
 ```
 
-More complex consumers may provide a workflow helper, as ESamp does through `esamp_support.configure_esamp_runtime(...)`.
+Workflow helpers can still wrap this pattern for benchmarks and demos, but third-party consumers should start with explicit registration.
 
 ## Validate It
 
@@ -153,6 +156,7 @@ Then add tests for your own consumer:
 
 ## Next Steps
 
+- [Consumer Delivery Modes](../developer-guides/consumer-delivery-modes.md)
 - [Benchmarking](../developer-guides/benchmarking.md)
 - [Validation](../developer-guides/validation.md)
 - [Debugging](../developer-guides/debugging.md)

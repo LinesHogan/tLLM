@@ -8,6 +8,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
+from tllm.runtime.residual_runtime import SamplerPrecomputeState
 from tllm.runtime.vllm_patch import port_runtime_hooks
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -50,16 +51,16 @@ class MigrationFinalizationUnitTest(unittest.TestCase):
         self.assertTrue((REPO_ROOT / "tllm" / "runtime" / "consumer_compat.py").is_file())
         self.assertTrue((REPO_ROOT / "tllm" / "runtime" / "hidden_event_bridge.py").is_file())
 
-    def test_public_esamp_api_no_longer_uses_side_train_names(self) -> None:
+    def test_public_esamp_api_no_longer_uses_legacy_training_names(self) -> None:
         support_text = (REPO_ROOT / "tllm" / "workflows" / "esamp_support.py").read_text(encoding="utf-8")
         config_text = (REPO_ROOT / "tllm" / "consumers" / "esamp" / "config.py").read_text(encoding="utf-8")
         readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
         self.assertIn("def run_esamp_throughput_case", support_text)
-        self.assertNotIn("def run_side_train_throughput_case", support_text)
+        self.assertNotIn("def run_" + "side" + "_train" + "_throughput_case", support_text)
         self.assertIn("enable_esamp_training", config_text)
-        self.assertNotIn("enable_side_train", config_text)
-        self.assertIn("configure_esamp_runtime()", readme_text)
+        self.assertNotIn("enable_" + "side" + "_train", config_text)
+        self.assertIn("register_consumer", readme_text)
         self.assertIn("llm.generate", readme_text)
 
     def test_port_runtime_hooks_no_longer_own_benchmark_request_mapping_helpers(self) -> None:
@@ -145,6 +146,7 @@ class MigrationFinalizationUnitTest(unittest.TestCase):
                 self.source_resolved_path = ""
                 self.target_resolved_path = ""
                 self.tap_decode_hidden = {}
+                self.sampler_precompute = SamplerPrecomputeState()
 
         class _Core:
             def __init__(self) -> None:

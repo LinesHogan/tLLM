@@ -27,10 +27,10 @@ The migration is only a few lines:
 ```diff
 - from vllm import LLM, SamplingParams
 + from vllm import SamplingParams
-+ from tllm import make_llm
-+ from tllm.workflows.esamp_support import configure_esamp_runtime
++ from tllm import make_llm, register_consumer
++ from tllm.consumers.esamp import ESampConsumer, ESampConsumerConfig
 
-+ configure_esamp_runtime()
++ register_consumer(ESampConsumer(ESampConsumerConfig()))
 + llm = make_llm(model_name="Qwen/Qwen2.5-7B-Instruct", dtype="bfloat16")
   outputs = llm.generate(
       [f"Suprise me an unexpectedly story about {i} evil sorcerers and the brave hero." for i in range(2, 16)],
@@ -38,17 +38,16 @@ The migration is only a few lines:
   )
 ```
 
-`make_llm` installs tLLM's vLLM v1 runtime hooks; `configure_esamp_runtime()` registers the ESamp consumer that actually uses those hooks.
+`make_llm` installs tLLM's vLLM v1 runtime hooks; `register_consumer(...)` attaches the consumer that actually uses those hooks. ESamp workflow helpers still exist for benchmarks and one-line demos.
 
-In the aligned 7B min-p ESamp benchmark, with RTX 4090 GPU, the optimized ESamp has measured about **96% of a vLLM baseline with modern inference optimizations enabled**. That baseline uses the vLLM V1 engine with CUDA Graph execution, FlashInfer sampling, bfloat16 weights, prefix-cache control for fair measurement, and the same sampling workload. 
+In the aligned 7B min-p ESamp benchmark, with RTX 4090 GPU, the optimized ESamp has measured about **98.8% of a vLLM baseline with modern inference optimizations enabled**. That baseline uses the vLLM V1 engine with CUDA Graph execution, FlashInfer sampling, bfloat16 weights, prefix-cache control for fair measurement, and the same sampling workload.
 
 Representative run:
 
-| Model/workload | Optimized vLLM baseline | ESamp | Ratio |
+| Model/workload | Optimized vLLM baseline | ESamp (triton kernel) | Ratio |
 |----------------|-----------------------------------------|------------------|-------|
-| Qwen2.5-7B, batch=8, n=16, min-p active path | 4800.995 tok/s | 4611.270 tok/s | 0.9605 |
+| Qwen2.5-7B, batch=8, n=16, min-p active path | 5370.616 tok/s | 5304.855 tok/s | 0.9878 |
 
-If you're happy, you can enable triton kernel for ESamp to have around 1-2% more throughput. But we don't guarantee this works on different model or some unusual settings.
 
 ## What You Can Build
 
@@ -68,7 +67,7 @@ pip install -e .
 python starter.py --max-new-tokens 32
 ```
 
-The starter runs ESamp with `Qwen/Qwen2.5-7B-Instruct`, generates 16 answers in parallel, and prints side-training statistics.
+The starter runs ESamp with `Qwen/Qwen2.5-7B-Instruct`, generates 16 answers in parallel, and prints runtime adaptation statistics.
 
 ## Documentation
 

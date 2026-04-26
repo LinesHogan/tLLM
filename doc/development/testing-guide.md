@@ -39,7 +39,7 @@ Useful focused groups:
 | `test_decode_localization_unit.py` | Decode row localization | Producer/localization changes |
 | `test_consumer_dispatch_contracts_unit.py` | ConsumerFlow and bundles | Port or bundle changes |
 | `test_dummy_consumer_unit.py` | Minimal consumer behavior | Consumer base/public API changes |
-| `test_esamp_per_request_unit.py` | Side-training behavior | Training path changes |
+| `test_esamp_per_request_unit.py` | ESamp training behavior | Training path changes |
 | `test_esamp_model_bank_backend_unit.py` | Model-bank path | Model-bank state or scheduling changes |
 
 Minimal logic-only check:
@@ -67,7 +67,7 @@ Unit tests cover logic. MSE validates that the real vLLM GPU path still maps hid
 
 ## ESamp or Training Changes
 
-Run unit tests, MSE, and an aligned side-training benchmark:
+Run unit tests, MSE, and an aligned ESamp benchmark:
 
 ```bash
 python -m pytest -q

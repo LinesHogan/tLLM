@@ -64,7 +64,7 @@ Debug 时可以临时 print；提交前把热路径打印删掉，或放到低�
 如果 consumer 像 DummyConsumer 一样使用异步 CPU worker：
 
 - `consume_bundle()` 只 enqueue
-- `apply_feedback()` 可以按 interval drain
+- `on_step_end()` 可以按 interval drain
 - `synchronize()` 必须 drain 剩余队列
 - 队列满时不要在热路径强制 drain。优先 drop 或把 backpressure 推到非热路径
 
@@ -91,7 +91,7 @@ Debug 时可以临时 print；提交前把热路径打印删掉，或放到低�
 - 模型加载 OOM：降低 `--gpu-memory-utilization`
 - 高 `sampling_n` OOM：增大 `--max-model-len` 或降低 `n`
 - consumer 暂存过多：降低 queue size，按 step stride export，或 drop
-- side-train OOM：降低 `--distiller-hidden-dim` 或 `--model-bank-rank`
+- ESamp training OOM：降低 `--distiller-hidden-dim` 或 `--model-bank-rank`
 
 vLLM 异常退出后，先检查 stale worker：
 

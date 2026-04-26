@@ -24,7 +24,7 @@ With multiple active requests, vLLM uses tensors shaped like `[total_tokens, hid
 
 ### 3. Training Must Not Block Inference
 
-Running side-training backward directly inside model forward would block the main inference stream. The work needs to be asynchronous, but still synchronized correctly with the data it consumes.
+Running ESamp distiller backward directly inside model forward would block the main inference stream. The work needs to be asynchronous, but still synchronized correctly with the data it consumes.
 
 ## tLLM's Split
 
@@ -132,7 +132,7 @@ class MyConsumer(BaseConsumer):
         # Your logic here.
 ```
 
-If you need step-end work, implement `apply_feedback(ctx)` as an optional compatibility hook.
+If you need step-end work, implement `on_step_end(ctx)` as an optional compatibility hook.
 
 ## Related Docs
 

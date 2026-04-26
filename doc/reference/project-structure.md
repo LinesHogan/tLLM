@@ -63,13 +63,13 @@ Consumer implementations.
 
 - `base.py`: common consumer interface.
 - `dummy/`: minimal teaching consumer.
-- `esamp/`: built-in side-training consumer.
+- `esamp/`: built-in adaptive/guidance consumer.
 
 ESamp key files:
 
 - `consumer.py`: `ESampConsumer`, the framework-facing wrapper.
 - `engine.py`: `ESampTrainEngine`, training state, and model-bank scheduling.
-- `model.py`: side-training model definitions.
+- `model.py`: distiller model definitions used by ESamp's training mechanism.
 - `template.py`: model-bank initialization helpers.
 
 ### `tllm/runtime/`

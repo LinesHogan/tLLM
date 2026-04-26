@@ -116,7 +116,7 @@
 
 - 主 hidden 消费逻辑
 - 异步 GPU->CPU 传输
-- side-train forward 或中间统计
+- ESamp distiller forward 或中间统计
 
 ### `block.end`
 
@@ -156,7 +156,7 @@
 它是 step 末尾的关键事件，runtime 在这个事件上会调用：
 
 ```python
-consumer.apply_feedback(ctx)
+consumer.on_step_end(ctx)
 ```
 
 适合：
@@ -172,13 +172,13 @@ consumer.apply_feedback(ctx)
 
 1. 如果该事件构造出了 `HiddenBatch`，调用 `consume(batch, ctx)`
 2. 调用 `on_tick(event_name, ctx)`
-3. 如果事件是 `execute_model.post`，再调用 `apply_feedback(ctx)`
+3. 如果事件是 `execute_model.post`，再调用 `on_step_end(ctx)`
 
 因此：
 
 - `consume()` 不是每个事件都会触发
 - `on_tick()` 是处理无 payload 生命周期事件的主入口
-- `apply_feedback()` 当前只在 `execute_model.post` 自动触发
+- `on_step_end()` 当前只在 `execute_model.post` 自动触发
 
 ## 相关文档
 

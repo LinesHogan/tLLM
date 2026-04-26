@@ -61,13 +61,13 @@ python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA available: {
 python starter.py --max-new-tokens 32
 ```
 
-这个命令会加载 `Qwen/Qwen2.5-7B-Instruct`，并行生成 16 条回答，同时在旁路运行 ESamp side-train。环境正常时，输出末尾会看到类似这样的统计：
+这个命令会加载 `Qwen/Qwen2.5-7B-Instruct`，并行生成 16 条回答，同时运行 ESamp 的训练机制。环境正常时，输出末尾会看到类似这样的统计：
 
 ```text
 ESamp stats: loss_avg=... loss_count=... answers=16 ...
 ```
 
-其中 `loss_count > 0` 说明 consumer 确实拿到了 hidden state，并触发了 side-train。
+其中 `loss_count > 0` 说明 consumer 确实拿到了 hidden state，并触发了 ESamp 的训练机制。
 
 如果遇到 `ModuleNotFoundError`，先检查虚拟环境是否激活；如果遇到 OOM，可以降低 `--gpu-memory-utilization`，或者临时把模型换成更小的 `Qwen/Qwen2.5-0.5B-Instruct`。
 
