@@ -10,6 +10,7 @@ from unittest import mock
 import torch
 
 from tllm.consumers.esamp import ESampConsumer, ESampConsumerConfig
+from tllm.runtime.residual_runtime import SamplerPrecomputeState
 from tllm.runtime.vllm_patch import sampler_patch
 
 
@@ -54,7 +55,7 @@ class ESampDistillerSamplingIntegrationUnitTest(unittest.TestCase):
         runtime = SimpleNamespace(
             consumer=consumer,
             event_step_id=12,
-            distiller_port_publish_step_id=12,
+            sampler_precompute=SamplerPrecomputeState(port_publish_step_id=12),
             decode_count=2,
             decode_request_ids=["reqA", "reqB"],
             decode_prompt_idxs=[7, 8],

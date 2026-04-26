@@ -9,6 +9,7 @@ from unittest import mock
 
 import torch
 
+from tllm.runtime.residual_runtime import SamplerPrecomputeState
 from tllm.runtime.vllm_patch import sampler_patch
 
 
@@ -49,6 +50,7 @@ class SamplerPatchUnitTest(unittest.TestCase):
             decode_sample_idxs=[0],
             source_resolved_path="layers.0",
             tap_decode_hidden={"layers.0": torch.ones((1, 2), dtype=torch.float32)},
+            sampler_precompute=SamplerPrecomputeState(),
         )
         runner = SimpleNamespace(model=SimpleNamespace(lm_head=SimpleNamespace(weight=torch.ones((3, 2)), bias=None)))
         sampler_patch.bind_runner_sampler(runtime=runtime, runner=runner)
@@ -161,9 +163,14 @@ class SamplerPatchUnitTest(unittest.TestCase):
         runtime = SimpleNamespace(
             consumer=SimpleNamespace(sampler_modifier_provider=lambda: provider),
             event_step_id=4,
-            sampler_precomputed_step_id=4,
-            sampler_precomputed_all_rows=True,
-            sampler_precomputed_dense_logits=torch.tensor([[2.0, 0.0, 0.0]], dtype=torch.float32),
+            sampler_precompute=SamplerPrecomputeState(precomputed_step_id=4),
+        )
+        runtime.sampler_precompute.store_cache(
+            step_id=4,
+            row_ids=torch.tensor([0], dtype=torch.long),
+            pred_hidden=torch.tensor([[0.0]], dtype=torch.float32),
+            dense_logits=torch.tensor([[2.0, 0.0, 0.0]], dtype=torch.float32),
+            all_rows=True,
         )
         runner = SimpleNamespace(model=object())
         sampler._tllm_runtime = runtime

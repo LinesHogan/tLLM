@@ -190,22 +190,20 @@ def _record_candidate_kernel_stats(result: CandidateSampleResult) -> None:
         runtime = residual_runtime.RUNTIME
     except Exception:
         return
+    precompute = runtime.sampler_precompute
     candidate_count = int(stats.get("candidate_count", 0) or 0)
     row_count = int(stats.get("row_count", 0) or 0)
-    runtime.distiller_candidate_sample_count = int(getattr(runtime, "distiller_candidate_sample_count", 0)) + 1
-    runtime.distiller_candidate_token_count = int(getattr(runtime, "distiller_candidate_token_count", 0)) + candidate_count
-    runtime.distiller_candidate_row_count = int(getattr(runtime, "distiller_candidate_row_count", 0)) + row_count
-    runtime.distiller_candidate_max_count = max(
-        int(getattr(runtime, "distiller_candidate_max_count", 0)),
-        candidate_count,
-    )
+    precompute.candidate_sample_count += 1
+    precompute.candidate_token_count += candidate_count
+    precompute.candidate_row_count += row_count
+    precompute.candidate_max_count = max(precompute.candidate_max_count, candidate_count)
     kernel_name = str(stats.get("kernel", "") or "")
     if kernel_name.startswith("triton"):
-        runtime.distiller_candidate_kernel_triton_count = int(getattr(runtime, "distiller_candidate_kernel_triton_count", 0)) + 1
+        precompute.candidate_kernel_triton_count += 1
     elif kernel_name:
-        runtime.distiller_candidate_kernel_torch_count = int(getattr(runtime, "distiller_candidate_kernel_torch_count", 0)) + 1
+        precompute.candidate_kernel_torch_count += 1
     if "fallback_reason" in stats:
-        runtime.distiller_candidate_kernel_fallback_count = int(getattr(runtime, "distiller_candidate_kernel_fallback_count", 0)) + 1
+        precompute.candidate_kernel_fallback_count += 1
 
 
 def _classify_temperature_mode(sampling_metadata: Any) -> str:

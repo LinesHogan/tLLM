@@ -4,10 +4,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 import torch
-import torch.nn.functional as F
 
 from tllm.common.state import resolve_object_by_path
 
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 
 SVDInitMethod = Literal["ffn_fast_svd", "ridge_svd"]
+_SILU_ONE = 1.0 / (1.0 + math.exp(-1.0))
 
 
 @dataclass(slots=True, frozen=True)
@@ -81,6 +82,10 @@ def compose_hidden_linear_map(
     return None
 
 
+def _detached_cpu_float(weight: torch.Tensor) -> torch.Tensor:
+    return weight.detach().to(device="cpu", dtype=torch.float32)
+
+
 def extract_ffn_fast_svd_template(
     *,
     target_layer: torch.nn.Module,
@@ -109,10 +114,10 @@ def extract_ffn_fast_svd_template(
 
     linear = None
     if up_w is not None and down_w is not None:
-        up_f = up_w.detach().float()
-        down_f = down_w.detach().float()
+        up_f = _detached_cpu_float(up_w)
+        down_f = _detached_cpu_float(down_w)
         if gate_w is not None and tuple(gate_w.shape) == tuple(up_w.shape):
-            up_f = 0.5 * (up_f + gate_w.detach().float())
+            up_f = 0.5 * (up_f + _detached_cpu_float(gate_w))
         linear = compose_hidden_linear_map(down_w=down_f, up_w=up_f, hidden_size=hidden_size)
 
     if linear is None:
@@ -125,10 +130,10 @@ def extract_ffn_fast_svd_template(
             down_w = resolve_linear_weight(block, ["down_proj", "fc2", "w2", "dense_4h_to_h"])
             if up_w is None or down_w is None:
                 continue
-            up_f = up_w.detach().float()
-            down_f = down_w.detach().float()
+            up_f = _detached_cpu_float(up_w)
+            down_f = _detached_cpu_float(down_w)
             if gate_w is not None and tuple(gate_w.shape) == tuple(up_w.shape):
-                up_f = 0.5 * (up_f + gate_w.detach().float())
+                up_f = 0.5 * (up_f + _detached_cpu_float(gate_w))
             linear = compose_hidden_linear_map(down_w=down_f, up_w=up_f, hidden_size=hidden_size)
             if linear is not None:
                 break
@@ -158,8 +163,7 @@ def extract_ffn_fast_svd_template(
     sqrt_s = torch.sqrt(s_r)
     a = u_r * sqrt_s.unsqueeze(0)
     b = sqrt_s.unsqueeze(1) * v_r.transpose(0, 1)
-    gate_const = float(F.silu(torch.ones((), device=b.device, dtype=b.dtype)).item())
-    return a, b / max(1e-6, gate_const)
+    return a.cpu(), (b / max(1e-6, _SILU_ONE)).cpu()
 
 
 def pick_template_layer_for_target(
@@ -208,8 +212,8 @@ class SVDModelBankInitializer:
             self.state.template_b = None
             self.state.template_key = ""
             return
-        self.state.template_a = a.detach()
-        self.state.template_b = b.detach()
+        self.state.template_a = a.detach().to(device="cpu")
+        self.state.template_b = b.detach().to(device="cpu")
         self.state.template_key = str(key)
 
     def prepare_from_model(
@@ -241,7 +245,7 @@ class SVDModelBankInitializer:
 
     def on_slot_assigned(self, engine: Any, slot: int) -> None:
         if self.config.method == "ffn_fast_svd":
-            ok = self._init_slot_ffn_fast_svd(engine, slot) if self.state.template_a is not None and self.state.template_b is not None else True
+            ok = self._init_slot_ffn_fast_svd(engine, slot) if self.state.template_a is not None and self.state.template_b is not None else False
             self.state.slot_init_done[int(slot)] = bool(ok)
         else:
             self.state.slot_init_done[int(slot)] = False
@@ -349,8 +353,7 @@ class SVDModelBankInitializer:
         sqrt_s = torch.sqrt(s_clamped)
         a_fit = u[:, :rank] * sqrt_s.unsqueeze(0)
         b_fit = sqrt_s.unsqueeze(1) * vh[:rank, :]
-        gate_const = float(F.silu(torch.ones((), device=x.device, dtype=x.dtype)).item())
-        b_fit = b_fit / max(1e-6, gate_const)
+        b_fit = b_fit / max(1e-6, _SILU_ONE)
         with torch.no_grad():
             a_param[slot].zero_()
             g_param[slot].zero_()

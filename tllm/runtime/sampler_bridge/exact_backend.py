@@ -35,13 +35,11 @@ def _record_candidate_stats(*, candidate_count: int, row_count: int) -> None:
     runtime = _runtime_state()
     if runtime is None:
         return
-    runtime.distiller_candidate_sample_count = int(getattr(runtime, "distiller_candidate_sample_count", 0)) + 1
-    runtime.distiller_candidate_token_count = int(getattr(runtime, "distiller_candidate_token_count", 0)) + int(candidate_count)
-    runtime.distiller_candidate_row_count = int(getattr(runtime, "distiller_candidate_row_count", 0)) + int(row_count)
-    runtime.distiller_candidate_max_count = max(
-        int(getattr(runtime, "distiller_candidate_max_count", 0)),
-        int(candidate_count),
-    )
+    precompute = runtime.sampler_precompute
+    precompute.candidate_sample_count += 1
+    precompute.candidate_token_count += int(candidate_count)
+    precompute.candidate_row_count += int(row_count)
+    precompute.candidate_max_count = max(precompute.candidate_max_count, int(candidate_count))
 
 
 def _select_sampling_tensor_rows(tensor: torch.Tensor | None, row_ids: torch.Tensor) -> torch.Tensor | None:

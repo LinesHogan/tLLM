@@ -4,12 +4,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+try:
+    from enum import StrEnum
+except ImportError:
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        def __str__(self) -> str:
+            return str(self.value)
+from typing import Any, Protocol
 
 import torch
 import torch.nn.functional as F
 
-ModelBankForwardBackendName = Literal["torch", "triton_grouped"]
+class ModelBankForwardBackendName(StrEnum):
+    TORCH = "torch"
+    TRITON_GROUPED = "triton_grouped"
 
 import triton
 import triton.language as tl
@@ -31,9 +41,9 @@ class ESampModelBankForwardBackend(Protocol):
 def normalize_model_bank_forward_backend(name: str | None) -> ModelBankForwardBackendName:
     key = str(name or "torch").strip().lower() or "torch"
     if key in {"torch", "reference", "default"}:
-        return "torch"
+        return ModelBankForwardBackendName.TORCH
     if key in {"triton", "triton_grouped", "experimental_triton_grouped"}:
-        return "triton_grouped"
+        return ModelBankForwardBackendName.TRITON_GROUPED
     raise ValueError(f"unsupported ESamp model-bank forward backend: {key}")
 
 

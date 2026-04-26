@@ -10,9 +10,10 @@
 
 ### ESamp 是什么
 
-ESamp 是 tLLM 内置的 side-training consumer。它在 LLM decode 过程中读取
-LLM 某一层的 source hidden，并用一个小模型学习预测另一层的 target hidden。
-这个小模型在本文里叫 distiller。
+ESamp 是 tLLM 内置的 adaptive/guidance consumer。它在 LLM decode 过程中读取
+LLM 某一层的 source hidden，并用一个小模型学习预测另一层的 target hidden；
+也可以把这个小模型的预测接到 sampler guidance 里。这个小模型在本文里叫
+distiller。训练是 ESamp 的一种机制，不是 ESamp 这个 consumer 的全部含义。
 
 训练目标一直是 hidden prediction loss。换句话说，训练本身没有因为 sampler
 intervention 改变。
@@ -137,6 +138,13 @@ logit_i >= max_logit + log(min_p)
 | 30 | 增加 candidate kernel selection counters 和 pre-dispatch fallback | 0.5B 与 7B min-p | 7B 仍高于目标；`candidate_kernel_fallback_count=0` | Triton 不支持 Qwen vocab 时不再每 step 抛异常再 fallback，而是 launch 前直接选择 torch。 |
 | 31 | Triton min-p keep-mask 改为显式 opt-in | 7B 两轮 target | `single_off=4800.995`，`model_bank_on=4611.270`，ratio `0.9605` | tiled Triton 正确但收益中性/噪声；默认回 torch 保住已测 7B 目标。 |
 | 32 | 增加 ESamp-local model-bank backend boundary 和 `triton_grouped` no-grad backend | 0.5B smoke | `torch=16631.708`，`triton_grouped=16831.864 tok/s` | 证明 Triton grouped model-bank forward 能在真实 runtime 跑，并且不破坏 training graph replay。因证据是单轮且噪声较大，保持 opt-in。 |
+| 33 | 增加 `ConsumerFlow.delivery` / `ownership`，并让 ESamp opt in 到 `gpu_staged` lease | 0.5B delivery-layer diagnosis | 设计目标是去掉 ESamp consumer 自己的 staging copy；当前小型 profile 为 `dispatch_off_config_false=10580.5 tok/s`、`tap_only_model_bank_compact=9705.6 tok/s`、`model_bank_train=9216.5 tok/s`，`loss_count=504`，model-bank graph replay hit `125` | 这一步主要修正公开接口和 buffer 生命周期语义。它能去掉一层 ESamp-owned copy，但不能绕过 `tap_decode_hidden` 捕获，也不能去掉 engine pipeline / graph input restage。剩余 gap 的根因主要在 capture/delivery/staging，而不是 distiller FLOPs 本身。 |
+| 34 | 去掉 ESamp engine active-row copy 的整块 tail zero，已 compact rows 训练时跳过重复 `index_select`，并让 GPU-staged flow 使用 typed request metadata view | 0.5B delivery-layer diagnosis | 复测 `dispatch_off_config_false=10694.9 tok/s`、`tap_only_model_bank_compact=9694.8 tok/s`、`model_bank_train=9212.5 tok/s`，`loss_count=504`，model-bank graph replay hit `125` | 这些低风险局部改动没有显著改变小模型吞吐，说明当前主要瓶颈不是这几处小 copy / Python dict，而是更结构性的 tap capture 与 engine / graph restage。 |
+| 35 | 增加通用 `ConsumerFlow.row_compaction=\"first_per_prompt\"`，ESamp model-bank 通过 flow contract 请求 per-prompt delivery rows | 0.5B delivery-layer diagnosis | `dispatch_off_config_false=10743.5 tok/s`、`tap_only_model_bank_compact=9740.4 tok/s`、`model_bank_train=9243.8 tok/s`，`loss_count=504`，model-bank graph replay hit `125` | 功能上避免 ESamp consumer 在 model-bank path 对 expanded samples 做本地 compact；runtime 只 compact 投递给该 flow 的 bundle / lease，不改变全局 decode row 状态。这是 tLLM 原生 delivery shaping 能力，不是 ESamp runtime 特判。 |
+| 36 | ESamp 缓存同一 model/layout 的 layer resolution，并保留 hook 内固定 shape capture | 0.5B delivery-layer diagnosis | 安全 lease copy 修复后复测 `dispatch_off_config_false=10553.2 tok/s`、`tap_only_model_bank_compact=9722.0 tok/s`、`model_bank_train=9280.1 tok/s`、`tap_only_shared_rows=9865.9 tok/s`；`loss_avg=4.327`、`loss_count=504`，model-bank graph replay hit `125`。动态 active-prefix capture 曾把 tap-only ratio 推高，但在 vLLM CUDA Graph replay 下会把 hook Python 分支固化，导致 `loss_avg=0`；已撤回。 | 重要结论：capture hook 内的性能优化必须是 graph-safe 的固定操作，不能依赖每 step Python `decode_count` 分支。`GpuStageLease` 当前是 call-scope lease，ESamp 必须先 copy 到 owned stage buffer 才能交给异步 engine。剩余 gap 的正确方向仍是更完整的 GPU consumer lane / compact staged capture，但需要在 CUDA Graph 约束下设计。 |
+| 37 | 将公开接口收敛到 `device_lease` / `DeviceTensorLease` / `RowBatchMeta`，并让 ESamp owned stage 只向 engine 传 active view | 0.5B delivery-layer diagnosis | 复测 `dispatch_off_config_false=10599.1 tok/s`、`tap_only_model_bank_compact=9885.7 tok/s`、`model_bank_train=9310.6 tok/s`，`loss_count=756`、graph replay hit `188`；随后修正 model-bank slot 默认按 prompt 数量配置并尝试把 `first_per_prompt` 下推到 decode localization。该尝试在同一 LLM 先 model-bank 后 shared 模式切换时暴露 scratch rows 容量不足，已撤回“按 flow cap 缩小全局 hook buffer”的部分。 | 新接口把 lease 生命周期写进类型：`lifetime=\"consume_call\"`。active-view 能减少 ESamp consumer -> engine 的无效 tail copy，方向正确但收益有限。重要 no-go：不能为了单个 compact flow 缩小全局 hook scratch/cudagraph shape；同一 runtime 可能切换到 full-row consumer，hook buffer 必须保持足够容量。 |
+| 38 | 增加 ESamp-local `adaptation_stream_mode` 诊断旋钮，并复测 stream 竞争 | 0.5B aligned short，`batch=8`、`sampling_n=16`、`max_new_tokens=128` | `single_off=28449.8 tok/s`；`dual=25728.8`、`single=25752.6`、`dual priority=-3=25857.4`、`serial=22653.2`，均有 `loss_count=2032`。delivery profile：`tap_only_model_bank_compact=26755.9`、`model_bank_train=25698.2`。禁用 ESamp training CUDA Graph 后 `model_bank_on=22343.1`。 | 两个 ESamp side stream 之间的竞争不是主因；`serial` 明显更慢，说明 overlap 本身仍有价值。当前 gap 主要由 tap/capture/delivery 固定税（约 5-6%）和 graph replay training 增量（约 3-4%）组成。priority tuning 不是可靠解法，因为默认 vLLM stream 已经可能是最低优先级；后续方向应是减少热路径 capture/delivery、减少每步 replay/launch，或做有预算的 adaptation queue。 |
+| 39 | 增加 path-hotspot profiling，并减少 compact delivery / ESamp model-bank 热路径重复工作 | 0.5B aligned short，`batch=8`、`sampling_n=16`、`max_new_tokens=128` | 初始三轮 `model_bank_on=25978.7 tok/s`；优化后 retained 三轮 `model_bank_on=26650.1 tok/s`，fresh `single_off=28421.9 tok/s`，ratio `0.9377`，`loss_count=4064`，graph replay hit `504`。同组优化中 best retained run 到 `26698.4 tok/s`。path-hotspot timed profile 中 `dispatch_bundles_cpu` 从约 `35.6ms/128 step` 降到约 `25.4ms/128 step`，其中 `feedback_cpu` 从约 `17.5ms` 降到约 `11.9ms`。 | 新增 `TLLM_TRACE_PATH_HOTSPOTS=1`，把 prepare / execute tail / delivery / feedback 的 CPU 热点写入 benchmark JSON。代码优化包括：`first_per_prompt` 直接构造 compact `RowBatchMeta`，ESamp consumer 缓存同一 model/layout 的 resource ensure，model-bank 只在新 prompt slot 出现时更新 sampling lookup，并缓存 slot-id tensor；decode localization 不再复制 vLLM 的 request-index mapping。曾尝试跳过稳定 active rows 下的 graph valid-mask staging，吞吐到 `26874.3 tok/s`，但 `loss_avg` 异常变化，已撤回。结论：Python tail 确实可见且可削减，但 98% 剩余差距主要不在 stream 数量或 metadata 小修，而在训练 graph replay 发射/资源竞争、tap capture 固定税和每步 adaptation work 密度。 |
 
 ## 最重要的经验
 
@@ -161,6 +169,11 @@ logit_i >= max_logit + log(min_p)
 
 6. Triton 要以目标 workload 结果为准。当前 min-p Triton keep-mask 已测试、已接入，
    但对 Qwen vocab 不是默认收益；torch 默认路径保住了 7B ratio。
+
+7. 不要把 ESamp 吞吐下降直接归因于 distiller 很小或很大。分层诊断里，
+   tap-only delivery 就可能已经掉很多；这说明捕获、bundle 组装、staging copy 和
+   Python metadata 调度也必须单独测。`gpu_staged` lease 是接口层的必要步骤，但不是
+   所有 copy 的终点。
 
 ## 当前默认策略
 

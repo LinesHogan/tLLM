@@ -65,20 +65,19 @@ def ensure_sampler_precompute_buffers(*, runtime: Any, runner: Any) -> None:
 def maybe_prepare_sampler_decode_step(*, runtime: Any, runner: Any) -> None:
     provider = _resolve_provider(runtime)
     if provider is None or not provider.is_active():
-        runtime.distiller_port_enabled = False
-        runtime.sampler_source_precompute_enabled = False
-        runtime.sampler_precomputed_step_id = int(getattr(runtime, "event_step_id", -1))
-        runtime.sampler_precomputed_dense_logits = None
-        runtime.sampler_precomputed_dense_logits_full = None
-        runtime.sampler_precomputed_pred_hidden = None
-        runtime.sampler_precomputed_pred_hidden_row_map = None
-        runtime.sampler_precomputed_row_ids = None
-        runtime.sampler_precomputed_all_rows = False
+        precompute = runtime.sampler_precompute
+        precompute.reset_decode_step(int(getattr(runtime, "event_step_id", -1)))
+        precompute.port_enabled = False
         return
-    runtime.distiller_port_enabled = True
+    runtime.sampler_precompute.port_enabled = True
     prepare = getattr(provider, "maybe_prepare_decode_step", None)
     if callable(prepare):
         prepare(runtime=runtime, runner=runner)
+
+
+def runtime_has_active_sampler_provider(runtime: Any) -> bool:
+    provider = _resolve_provider(runtime)
+    return bool(provider is not None and provider.is_active())
 
 
 def maybe_capture_source_precompute(*, runtime: Any, runner: Any, layer_path: str) -> None:
@@ -136,12 +135,13 @@ def _maybe_sample_precomputed_dense_fast(
             return None
         if bool(getattr(sampling_metadata, "generators", {})):
             return None
-        if int(getattr(runtime, "sampler_precomputed_step_id", -1)) != int(getattr(runtime, "event_step_id", -2)):
+        cache = runtime.sampler_precompute.cache_for_step(int(getattr(runtime, "event_step_id", -2)))
+        if cache is None:
             return None
-        if not bool(getattr(runtime, "sampler_precomputed_all_rows", False)):
+        if not bool(cache.all_rows):
             return None
-        dense = getattr(runtime, "sampler_precomputed_dense_logits", None)
-        if not isinstance(dense, torch.Tensor):
+        dense = cache.dense_logits
+        if dense is None:
             return None
         beta = float(getattr(getattr(provider, "config", None), "distiller_beta", 0.0) or 0.0)
         if beta == 0.0:

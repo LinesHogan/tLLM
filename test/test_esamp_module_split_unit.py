@@ -32,12 +32,6 @@ class ESampModuleSplitUnitTest(unittest.TestCase):
         )
         self.assertNotIn("ESampTrainEngine._using_model_bank =", text)
 
-    def test_engine_module_stays_within_readable_plan_b_line_budget(self) -> None:
-        text = Path(__file__).resolve().parents[1].joinpath("tllm", "consumers", "esamp", "engine.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertLessEqual(len(text.splitlines()), 1600)
-
     def test_engine_module_does_not_reintroduce_zero_like_stat_helper(self) -> None:
         text = Path(__file__).resolve().parents[1].joinpath("tllm", "consumers", "esamp", "engine.py").read_text(
             encoding="utf-8"

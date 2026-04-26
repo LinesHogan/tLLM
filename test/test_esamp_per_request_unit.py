@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import torch
 
 from tllm.consumers.esamp import engine as engine_module
+from tllm.consumers.esamp.config import AdaptationStreamMode, ESampConsumerConfig
 from tllm.consumers.esamp.engine import ESampTrainEngine, copy_active_rows_into_buffer, group_row_indices_by_prompt
 from tllm.consumers.esamp.initializers.svd import SVDModelBankInitializerConfig, build_model_bank_initializer
 from tllm.consumers.base import BaseConsumer
@@ -54,7 +55,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
                 _ = ctx
                 observed.append(event_name)
 
-            def apply_feedback(self, ctx: RuntimeContext) -> None:
+            def on_step_end(self, ctx: RuntimeContext) -> None:
                 _ = ctx
 
         esamp_runtime.clear_dispatch_consumers()
@@ -108,7 +109,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
             def on_tick(self, event_name: str, ctx: RuntimeContext) -> None:
                 _ = (event_name, ctx)
 
-            def apply_feedback(self, ctx: RuntimeContext) -> None:
+            def on_step_end(self, ctx: RuntimeContext) -> None:
                 _ = ctx
 
             def synchronize(self) -> None:
@@ -156,7 +157,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
                 if event_name == "execute_model.post":
                     observed.append((event_name, "", 0, []))
 
-            def apply_feedback(self, ctx: RuntimeContext) -> None:
+            def on_step_end(self, ctx: RuntimeContext) -> None:
                 _ = ctx
 
         esamp_runtime.clear_dispatch_consumers()
@@ -229,7 +230,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
             select=lambda **kwargs: [],
         )
         esamp_runtime.RUNTIME.event_step_id = 9
-        esamp_runtime.RUNTIME.distiller_port_enabled = True
+        esamp_runtime.RUNTIME.sampler_precompute.port_enabled = True
         esamp_runtime.RUNTIME.decode_post_logits_launched_step_id = -1
         esamp_runtime.RUNTIME.decode_count = 2
         esamp_runtime.RUNTIME.decode_row_idx = torch.tensor([4, 7, 0], dtype=torch.long)
@@ -271,7 +272,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
                 launched_step_id = int(esamp_runtime.RUNTIME.decode_post_logits_launched_step_id)
         finally:
             esamp_runtime.RUNTIME.dispatch_plan = None
-            esamp_runtime.RUNTIME.distiller_port_enabled = True
+            esamp_runtime.RUNTIME.sampler_precompute.port_enabled = True
             esamp_runtime.RUNTIME.decode_post_logits_launched_step_id = -1
             esamp_runtime.RUNTIME.tap_decode_hidden = {}
             esamp_runtime.RUNTIME.decode_row_idx = None
@@ -381,6 +382,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
                 decode_count=2,
                 decode_post_logits_launched_step_id=-1,
                 source_resolved_path="layers.0",
+                sampler_precompute=esamp_runtime.SamplerPrecomputeState(),
             ),
         )
         runner = SimpleNamespace(model=object())
@@ -405,7 +407,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         grouped = group_row_indices_by_prompt(prompt_idxs, active_rows=2)
         self.assertEqual(grouped, {0: [0], 1: [1]})
 
-    def test_short_hidden_batches_can_fill_fixed_scratch_buffers(self) -> None:
+    def test_copy_active_rows_leaves_inactive_tail_untouched(self) -> None:
         dst = torch.full((4, 3), fill_value=-1.0, dtype=torch.float32)
         src = torch.tensor(
             [
@@ -419,7 +421,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
 
         self.assertEqual(copied, 2)
         self.assertTrue(torch.equal(dst[:2], src))
-        self.assertTrue(torch.equal(dst[2:], torch.zeros((2, 3), dtype=torch.float32)))
+        self.assertTrue(torch.equal(dst[2:], torch.full((2, 3), fill_value=-1.0, dtype=torch.float32)))
 
     def test_runtime_req_id_resolver_for_n_greater_than_one(self) -> None:
         esamp_runtime.RUNTIME.reqid_to_promptidx = {"reqA": 7, "reqB": 11}
@@ -514,6 +516,9 @@ class ESampPerRequestUnitTest(unittest.TestCase):
             per_request_model_bank=True,
             model_bank_slots=16,
             model_bank_flush_interval=4,
+            adaptation_pipeline_slots=8,
+            adaptation_stream_mode="single",
+            adaptation_stream_priority=-1,
             model_bank_rank=32,
             model_bank_use_output_layernorm=False,
             model_bank_initializer=SVDModelBankInitializerConfig(
@@ -528,6 +533,9 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         self.assertTrue(cfg.per_request_model_bank)
         self.assertEqual(cfg.model_bank_slots, 16)
         self.assertEqual(cfg.model_bank_flush_interval, 4)
+        self.assertEqual(cfg.adaptation_pipeline_slots, 8)
+        self.assertEqual(cfg.adaptation_stream_mode, "single")
+        self.assertEqual(cfg.adaptation_stream_priority, -1)
         self.assertEqual(cfg.model_bank_rank, 32)
         self.assertFalse(cfg.model_bank_use_output_layernorm)
         assert cfg.model_bank_initializer is not None
@@ -535,6 +543,21 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         self.assertAlmostEqual(cfg.model_bank_initializer.ridge_lambda, 5e-3)
         self.assertEqual(cfg.model_bank_initializer.min_rows, 24)
         self.assertEqual(cfg.model_bank_initializer.max_wait_steps, 3)
+
+    def test_adaptation_stream_mode_accepts_only_canonical_names(self) -> None:
+        for mode in ("dual", "single", "serial"):
+            with self.subTest(mode=mode):
+                cfg = ESampConsumerConfig(adaptation_stream_mode=mode)
+                self.assertEqual(cfg.adaptation_stream_mode, mode)
+
+        cfg = ESampConsumerConfig(adaptation_stream_mode=AdaptationStreamMode.SINGLE)
+        self.assertEqual(cfg.adaptation_stream_mode, AdaptationStreamMode.SINGLE)
+        self.assertEqual(str(cfg.adaptation_stream_mode), "single")
+
+        for mode in ("async", "async-dual", "dual-stream", "current", "main", "single-stream"):
+            with self.subTest(mode=mode):
+                with self.assertRaisesRegex(ValueError, "adaptation_stream_mode"):
+                    ESampConsumerConfig(adaptation_stream_mode=mode)
 
     def test_model_bank_ridge_svd_init_reduces_start_mse(self) -> None:
         device = torch.device("cpu")
@@ -572,7 +595,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
                 hidden_size=hidden,
                 hidden_dtype=dtype,
             )
-        slot = consumer._ensure_model_bank_slot(0)
+        slot = consumer._assign_model_bank_slot(0)
 
         src = torch.randn((rows, hidden), generator=g, device=device, dtype=dtype)
         teacher_u = torch.randn((hidden, rank), generator=g, device=device, dtype=dtype) * 0.2
@@ -626,7 +649,7 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         b = torch.randn((rank, hidden), generator=g, device=device, dtype=dtype) * 0.1
         assert consumer.state.model_bank_initializer is not None
         consumer.state.model_bank_initializer.set_template(a=a, b=b, key="unit")
-        slot = consumer._ensure_model_bank_slot(0)
+        slot = consumer._assign_model_bank_slot(0)
         self.assertTrue(consumer.state.model_bank_initializer.state.slot_init_done.get(slot, False))
 
         src = torch.randn((rows, hidden), generator=g, device=device, dtype=dtype)
@@ -638,6 +661,70 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         ref = torch.matmul(torch.matmul(src, a), b) * gate_const
         mse = float(torch.mean((delta - ref) ** 2).item())
         self.assertLess(mse, 1e-6)
+
+    def test_model_bank_ffn_fast_svd_templates_are_cpu_detached(self) -> None:
+        hidden = 8
+        rank = 2
+        mlp = torch.nn.Module()
+        mlp.up_proj = torch.nn.Linear(hidden, hidden * 2, bias=False)
+        mlp.down_proj = torch.nn.Linear(hidden * 2, hidden, bias=False)
+
+        initializer = build_model_bank_initializer(SVDModelBankInitializerConfig(method="ffn_fast_svd"))
+        consumer = ESampTrainEngine(
+            hidden_dim=rank,
+            lr=1e-3,
+            enabled=True,
+            per_request_models=True,
+            per_request_model_bank=True,
+            model_bank_slots=1,
+            model_bank_rank=rank,
+            model_bank_initializer=initializer,
+        )
+
+        assert initializer is not None
+        initializer.prepare_from_model(
+            engine=consumer,
+            model=mlp,
+            target_layer=mlp,
+            target_resolved="mlp",
+            hidden_size=hidden,
+        )
+
+        self.assertIsNotNone(initializer.state.template_a)
+        self.assertIsNotNone(initializer.state.template_b)
+        assert initializer.state.template_a is not None
+        assert initializer.state.template_b is not None
+        self.assertEqual(initializer.state.template_a.device.type, "cpu")
+        self.assertEqual(initializer.state.template_b.device.type, "cpu")
+        self.assertFalse(initializer.state.template_a.requires_grad)
+        self.assertFalse(initializer.state.template_b.requires_grad)
+
+    def test_model_bank_ffn_fast_svd_failed_template_does_not_mark_slot_initialized(self) -> None:
+        initializer = build_model_bank_initializer(SVDModelBankInitializerConfig(method="ffn_fast_svd"))
+        consumer = ESampTrainEngine(
+            hidden_dim=2,
+            lr=1e-3,
+            enabled=True,
+            per_request_models=True,
+            per_request_model_bank=True,
+            model_bank_slots=1,
+            model_bank_rank=2,
+            model_bank_initializer=initializer,
+        )
+
+        assert initializer is not None
+        with mock.patch("torch.cuda.Stream"), mock.patch("torch.cuda.Event"), mock.patch(
+            "torch.cuda.stream", return_value=contextlib.nullcontext()
+        ):
+            consumer.ensure_resources(
+                device=torch.device("cpu"),
+                rows=2,
+                hidden_size=4,
+                hidden_dtype=torch.float32,
+            )
+        slot = consumer._assign_model_bank_slot(0)
+
+        self.assertFalse(initializer.state.slot_init_done.get(slot, True))
 
     def test_engine_configure_preserves_initializer_instance_when_config_is_unchanged(self) -> None:
         initializer_cfg = SVDModelBankInitializerConfig(method="ffn_fast_svd")
@@ -962,6 +1049,70 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(int(consumer.state.stats.loss_count.item()), 2)
 
+    def test_graph_input_staging_only_clears_previous_active_prefix(self) -> None:
+        device = torch.device("cpu")
+        dtype = torch.float32
+        hidden = 2
+        rows = 5
+        consumer = ESampTrainEngine(hidden_dim=2, lr=1e-3, enabled=True)
+        graph = consumer.state.graphs["shared"]
+        graph.rows = rows
+        graph.active_rows = 2
+        graph.buffers = {
+            "src": torch.zeros((rows, hidden), device=device, dtype=dtype),
+            "tgt": torch.zeros((rows, hidden), device=device, dtype=dtype),
+            "valid": torch.tensor([1.0, 1.0, 9.0, 9.0, 9.0], device=device, dtype=torch.float32),
+            "loss": torch.zeros((1,), device=device, dtype=torch.float32),
+        }
+        src = torch.ones((1, hidden), device=device, dtype=dtype)
+        tgt = torch.full((1, hidden), 2.0, device=device, dtype=dtype)
+
+        ok = consumer._stage_graph_inputs("shared", src=src, tgt=tgt, active_rows=1)
+
+        self.assertTrue(ok)
+        self.assertEqual(graph.active_rows, 1)
+        self.assertTrue(torch.equal(graph.buffers["valid"], torch.tensor([1.0, 0.0, 9.0, 9.0, 9.0])))
+
+    def test_external_graph_input_staging_keeps_source_target_aliases(self) -> None:
+        device = torch.device("cpu")
+        dtype = torch.float32
+        hidden = 2
+        rows = 3
+        consumer = ESampTrainEngine(hidden_dim=2, lr=1e-3, enabled=True)
+        graph = consumer.state.graphs["model_bank"]
+        graph.rows = rows
+        graph.slots = 2
+        graph.external_inputs = True
+        external_src = torch.full((rows, hidden), 5.0, device=device, dtype=dtype)
+        external_tgt = torch.full((rows, hidden), 6.0, device=device, dtype=dtype)
+        graph.buffers = {
+            "slot_ids": torch.zeros((rows,), device=device, dtype=torch.long),
+            "src": external_src,
+            "tgt": external_tgt,
+            "valid": torch.zeros((rows,), device=device, dtype=torch.float32),
+            "slot_sum": torch.zeros((2,), device=device, dtype=torch.float32),
+            "slot_cnt": torch.zeros((2,), device=device, dtype=torch.float32),
+            "loss": torch.zeros((1,), device=device, dtype=torch.float32),
+        }
+        src = torch.ones((rows, hidden), device=device, dtype=dtype)
+        tgt = torch.ones((rows, hidden), device=device, dtype=dtype)
+        slot_ids = torch.tensor([0, 1], device=device, dtype=torch.long)
+
+        ok = consumer._stage_graph_inputs(
+            "model_bank",
+            src=src,
+            tgt=tgt,
+            active_rows=2,
+            slot_ids=slot_ids,
+            graph=graph,
+        )
+
+        self.assertTrue(ok)
+        self.assertTrue(torch.equal(graph.buffers["src"], external_src))
+        self.assertTrue(torch.equal(graph.buffers["tgt"], external_tgt))
+        self.assertTrue(torch.equal(graph.buffers["slot_ids"][:2], slot_ids))
+        self.assertTrue(torch.equal(graph.buffers["valid"], torch.tensor([1.0, 1.0, 0.0])))
+
     def test_read_and_reset_stats_handles_inference_mode_buffers(self) -> None:
         device = torch.device("cpu")
         consumer = ESampTrainEngine(hidden_dim=4, lr=1e-3, enabled=True)
@@ -1225,6 +1376,73 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         self.assertGreater(float(stats.loss_sum.item()), 0.0)
         self.assertEqual(int(stats.loss_count.item()), 2)
 
+    def test_model_bank_training_uses_prefix_view_when_rows_are_already_prompt_compact(self) -> None:
+        consumer = ESampTrainEngine(
+            hidden_dim=2,
+            lr=1e-3,
+            enabled=True,
+            per_request_models=True,
+            per_request_model_bank=True,
+            model_bank_slots=2,
+            model_bank_rank=2,
+            model_bank_train_cudagraph=False,
+        )
+        with mock.patch("torch.cuda.Stream"), mock.patch("torch.cuda.Event"), mock.patch(
+            "torch.cuda.stream", return_value=contextlib.nullcontext()
+        ):
+            consumer.ensure_resources(
+                device=torch.device("cpu"),
+                rows=4,
+                hidden_size=6,
+                hidden_dtype=torch.float32,
+            )
+
+        src = torch.randn((4, 6), dtype=torch.float32)
+        tgt = src + 0.25
+        with mock.patch.object(consumer, "_train_model_bank_kernel") as p_kernel:
+            consumer._train_model_bank(src, tgt, 2, [7, 9])
+
+        kwargs = p_kernel.call_args.kwargs
+        self.assertEqual(int(kwargs["src"].shape[0]), 2)
+        self.assertEqual(int(kwargs["tgt"].shape[0]), 2)
+        self.assertEqual(kwargs["src"].data_ptr(), src[:2].data_ptr())
+        self.assertEqual(kwargs["tgt"].data_ptr(), tgt[:2].data_ptr())
+
+    def test_model_bank_pipeline_slot_graph_capture_uses_external_prefix_inputs(self) -> None:
+        consumer = ESampTrainEngine(
+            hidden_dim=2,
+            lr=1e-3,
+            enabled=True,
+            per_request_models=True,
+            per_request_model_bank=True,
+            model_bank_slots=2,
+            model_bank_rank=2,
+            model_bank_train_cudagraph=False,
+        )
+        with mock.patch("torch.cuda.Stream"), mock.patch("torch.cuda.Event"), mock.patch(
+            "torch.cuda.stream", return_value=contextlib.nullcontext()
+        ):
+            consumer.ensure_resources(
+                device=torch.device("cpu"),
+                rows=4,
+                hidden_size=6,
+                hidden_dtype=torch.float32,
+            )
+
+        src = torch.randn((4, 6), dtype=torch.float32)
+        tgt = src + 0.25
+        with mock.patch.object(consumer, "_graph_enabled", return_value=True), mock.patch.object(
+            consumer,
+            "_capture_graph",
+            return_value=True,
+        ) as p_capture:
+            consumer._train_model_bank(src, tgt, 2, [7, 9], pipeline_slot=1)
+
+        self.assertEqual(p_capture.call_args.args, ("model_bank",))
+        self.assertEqual(p_capture.call_args.kwargs["rows"], 2)
+        self.assertEqual(p_capture.call_args.kwargs["src_input"].data_ptr(), src[:2].data_ptr())
+        self.assertEqual(p_capture.call_args.kwargs["tgt_input"].data_ptr(), tgt[:2].data_ptr())
+
     def test_model_bank_training_uses_one_row_per_slot_for_expanded_samples(self) -> None:
         consumer = ESampTrainEngine(
             hidden_dim=2,
@@ -1291,7 +1509,11 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         ) as p_capture:
             consumer._train_model_bank(src, tgt, 6, [0, 0, 0, 1, 1, 1])
 
-        p_capture.assert_called_once_with("model_bank", rows=2)
+        p_capture.assert_called_once()
+        self.assertEqual(p_capture.call_args.args, ("model_bank",))
+        self.assertEqual(p_capture.call_args.kwargs["rows"], 2)
+        self.assertIsNone(p_capture.call_args.kwargs["src_input"])
+        self.assertIsNone(p_capture.call_args.kwargs["tgt_input"])
 
     def test_model_bank_auto_slot_capacity_respects_allocated_rows(self) -> None:
         consumer = ESampTrainEngine(
@@ -1313,10 +1535,10 @@ class ESampPerRequestUnitTest(unittest.TestCase):
                 hidden_dtype=torch.float32,
             )
 
-        self.assertEqual([consumer._ensure_model_bank_slot(i) for i in range(4)], [0, 1, 2, 3])
+        self.assertEqual([consumer._assign_model_bank_slot(i) for i in range(4)], [0, 1, 2, 3])
         self.assertEqual(getattr(consumer.state, "per_request_trainers", {}), {})
         with self.assertRaisesRegex(RuntimeError, "slots exhausted"):
-            consumer._ensure_model_bank_slot(4)
+            consumer._assign_model_bank_slot(4)
 
     def test_per_request_training_requires_valid_prompt_metadata(self) -> None:
         consumer = ESampTrainEngine(hidden_dim=2, lr=1e-3, enabled=True, per_request_models=True)
@@ -1359,6 +1581,107 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         tgt = src + 0.1
         with self.assertRaisesRegex(RuntimeError, "prompt metadata"):
             consumer._train_model_bank(src, tgt, 2, [-1, -1])
+
+    def test_model_bank_training_updates_sampling_lookup_only_for_new_prompt_slots(self) -> None:
+        consumer = ESampTrainEngine(
+            hidden_dim=2,
+            lr=1e-3,
+            enabled=True,
+            per_request_models=True,
+            per_request_model_bank=True,
+            model_bank_slots=2,
+            model_bank_rank=2,
+        )
+        with mock.patch("torch.cuda.Stream"), mock.patch("torch.cuda.Event"), mock.patch(
+            "torch.cuda.stream", return_value=contextlib.nullcontext()
+        ):
+            consumer.ensure_resources(
+                device=torch.device("cpu"),
+                rows=4,
+                hidden_size=6,
+                hidden_dtype=torch.float32,
+            )
+
+        src = torch.randn((2, 6), dtype=torch.float32)
+        tgt = src + 0.1
+        with mock.patch.object(consumer, "_write_sampling_lookup_dense_entries", wraps=consumer._write_sampling_lookup_dense_entries) as p_write, mock.patch.object(
+            consumer,
+            "_maybe_run_model_bank_graph",
+            return_value=True,
+        ):
+            consumer._train_model_bank(src, tgt, 2, [3, 4], pipeline_slot=0)
+            consumer._train_model_bank(src, tgt, 2, [3, 4], pipeline_slot=0)
+
+        self.assertEqual(p_write.call_count, 1)
+
+    def test_engine_uses_configured_adaptation_pipeline_slots(self) -> None:
+        consumer = ESampTrainEngine(
+            hidden_dim=2,
+            lr=1e-3,
+            enabled=True,
+            per_request_models=True,
+            per_request_model_bank=True,
+            model_bank_slots=2,
+            model_bank_rank=2,
+            adaptation_pipeline_slots=7,
+        )
+        with mock.patch("torch.cuda.Stream"), mock.patch("torch.cuda.Event"), mock.patch(
+            "torch.cuda.stream", return_value=contextlib.nullcontext()
+        ):
+            consumer.ensure_resources(
+                device=torch.device("cpu"),
+                rows=4,
+                hidden_size=6,
+                hidden_dtype=torch.float32,
+            )
+
+        pipeline = consumer._require_pipeline()
+        self.assertEqual(tuple(pipeline.src.shape), (7, 4, 6))
+        self.assertEqual(len(consumer.state.src_staged_events), 7)
+
+    def test_engine_single_adaptation_stream_mode_reuses_one_stream(self) -> None:
+        stream = object()
+        consumer = ESampTrainEngine(
+            hidden_dim=2,
+            lr=1e-3,
+            enabled=True,
+            adaptation_stream_mode="single",
+            adaptation_stream_priority=-1,
+        )
+        with mock.patch("torch.cuda.Stream", return_value=stream) as make_stream, mock.patch(
+            "torch.cuda.Event"
+        ), mock.patch("torch.cuda.stream", return_value=contextlib.nullcontext()):
+            consumer.ensure_resources(
+                device=torch.device("cpu"),
+                rows=4,
+                hidden_size=6,
+                hidden_dtype=torch.float32,
+            )
+
+        self.assertIs(consumer.state.forward_stream, stream)
+        self.assertIs(consumer.state.train_stream, stream)
+        make_stream.assert_called_once_with(device=torch.device("cpu"), priority=-1)
+
+    def test_engine_serial_adaptation_stream_mode_uses_current_stream(self) -> None:
+        consumer = ESampTrainEngine(
+            hidden_dim=2,
+            lr=1e-3,
+            enabled=True,
+            adaptation_stream_mode="serial",
+        )
+        with mock.patch("torch.cuda.Stream") as make_stream, mock.patch("torch.cuda.Event"), mock.patch(
+            "torch.cuda.stream", return_value=contextlib.nullcontext()
+        ):
+            consumer.ensure_resources(
+                device=torch.device("cpu"),
+                rows=4,
+                hidden_size=6,
+                hidden_dtype=torch.float32,
+            )
+
+        self.assertIsNone(consumer.state.forward_stream)
+        self.assertIsNone(consumer.state.train_stream)
+        make_stream.assert_not_called()
 
     def test_engine_shared_training_attempts_graph_capture_when_enabled(self) -> None:
         consumer = ESampTrainEngine(hidden_dim=2, lr=1e-3, enabled=True)
@@ -1443,7 +1766,11 @@ class ESampPerRequestUnitTest(unittest.TestCase):
         ) as p_capture:
             consumer._train_model_bank(src, tgt, 4, [0, 0, 1, 1])
 
-        p_capture.assert_called_once_with("model_bank", rows=2)
+        p_capture.assert_called_once()
+        self.assertEqual(p_capture.call_args.args, ("model_bank",))
+        self.assertEqual(p_capture.call_args.kwargs["rows"], 2)
+        self.assertIsNone(p_capture.call_args.kwargs["src_input"])
+        self.assertIsNone(p_capture.call_args.kwargs["tgt_input"])
 
     def test_model_bank_main_path_graph_replay_failure_disables_graph_and_falls_back(self) -> None:
         device = torch.device("cpu")
@@ -1781,6 +2108,10 @@ class ESampPerRequestUnitTest(unittest.TestCase):
     def test_engine_launch_entrypoints_derive_device_from_hidden_tensor(self) -> None:
         self.assertEqual(tuple(inspect.signature(ESampTrainEngine.launch_forward).parameters), ("self", "source_hidden"))
         self.assertEqual(tuple(inspect.signature(ESampTrainEngine.launch_target).parameters), ("self", "target_hidden"))
+        self.assertEqual(
+            tuple(inspect.signature(ESampTrainEngine.launch_step).parameters),
+            ("self", "source_hidden", "target_hidden"),
+        )
         text = (Path(__file__).resolve().parents[1] / "tllm" / "consumers" / "esamp" / "consumer.py").read_text(
             encoding="utf-8"
         )

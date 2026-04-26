@@ -11,7 +11,9 @@ from unittest import mock
 import torch
 
 from tllm.consumers.esamp import ESampConsumer, ESampConsumerConfig
+from tllm.contracts.gpu_stage import DeviceTensorLease
 from tllm.contracts.port_bundle import BundleKey, PortBundle
+from tllm.contracts.request_meta_view import RowBatchMeta
 from tllm.contracts.runtime_context import RuntimeContext
 from tllm.ports.base import PortKind
 from tllm.ports.residual_stream import ResidualLocator
@@ -41,13 +43,15 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
 
         self.assertEqual(len(flows), 1)
         flow = flows[0]
-        self.assertEqual(flow.window, "out_of_band_train")
+        self.assertEqual(flow.window, "out_of_band")
         self.assertEqual(
             [read.kind for read in flow.reads],
             [PortKind.RESIDUAL_STREAM, PortKind.RESIDUAL_STREAM, PortKind.REQUEST_META],
         )
         self.assertEqual([read.role for read in flow.reads[:2]], ["source", "target"])
         self.assertEqual(flow.bundle_key, ("engine_step_id", "phase"))
+        self.assertEqual(flow.delivery, "device_lease")
+        self.assertEqual(flow.ownership, "runtime_lease")
 
     def test_flows_are_empty_when_esamp_is_disabled(self) -> None:
         consumer = ESampConsumer(ESampConsumerConfig(enable_esamp_training=False), engine=mock.Mock())
@@ -79,6 +83,64 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
         self.assertIs(consumer.config, updated)
         self.assertEqual(engine.calls, [updated])
 
+    def test_consume_bundle_reuses_runtime_layer_resolution_for_same_model(self) -> None:
+        engine = mock.Mock()
+        consumer = ESampConsumer(ESampConsumerConfig(graph_scratch_rows=4), engine=engine)
+        source_layer = torch.nn.Linear(4, 4)
+        target_layer = torch.nn.Linear(4, 4)
+        model = SimpleNamespace(config=SimpleNamespace(hidden_size=4))
+        bundle = PortBundle(
+            key=BundleKey(engine_step_id=1, phase="decode", request_id="r0", sample_idx=0),
+            entries={
+                "source": torch.ones((2, 4), dtype=torch.float32),
+                "target": torch.ones((2, 4), dtype=torch.float32),
+                "request_meta": RowBatchMeta(
+                    request_ids=("r0", "r1"),
+                    prompt_idxs=(0, 1),
+                    sample_idxs=(0, 0),
+                    phase="decode",
+                    engine_step_id=1,
+                ),
+            },
+        )
+        ctx = self._ctx(model=model)
+
+        with mock.patch.object(
+            consumer,
+            "_resolve_runtime_layers",
+            return_value=(source_layer, target_layer),
+        ) as p_resolve, mock.patch.object(consumer, "_maybe_prepare_initializer") as p_prepare:
+            consumer.consume_bundle(bundle, ctx)
+            consumer.consume_bundle(bundle, ctx)
+
+        self.assertEqual(p_resolve.call_count, 1)
+        self.assertEqual(p_prepare.call_count, 1)
+        self.assertEqual(engine.ensure_resources.call_count, 1)
+
+    def test_consume_bundle_noops_when_training_is_disabled_after_plan_build(self) -> None:
+        engine = mock.Mock()
+        consumer = ESampConsumer(ESampConsumerConfig(graph_scratch_rows=4), engine=engine)
+        consumer.set_enabled(False)
+        bundle = PortBundle(
+            key=BundleKey(engine_step_id=1, phase="decode", request_id="r0", sample_idx=0),
+            entries={
+                "source": torch.ones((2, 4), dtype=torch.float32),
+                "target": torch.ones((2, 4), dtype=torch.float32),
+                "request_meta": [
+                    {"request_id": "r0", "prompt_idx": 0, "sample_idx": 0},
+                    {"request_id": "r1", "prompt_idx": 1, "sample_idx": 0},
+                ],
+            },
+        )
+        ctx = self._ctx()
+
+        with mock.patch.object(consumer, "_ensure_runtime_resources") as p_prepare:
+            consumer.consume_bundle(bundle, ctx)
+
+        p_prepare.assert_not_called()
+        engine.launch_forward.assert_not_called()
+        engine.launch_target.assert_not_called()
+
     def test_esamp_workflows_no_longer_import_consumer_runtime_adapter(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         for rel in (
@@ -101,6 +163,235 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
             entries={
                 "source": source_hidden,
                 "target": target_hidden,
+                "request_meta": RowBatchMeta(
+                    request_ids=("reqA", "reqB"),
+                    prompt_idxs=(7, 9),
+                    sample_idxs=(0, 1),
+                    phase="decode",
+                    engine_step_id=1,
+                ),
+            },
+        )
+
+        with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None) as p_prepare:
+            consumer.consume_bundle(bundle, ctx)
+
+        p_prepare.assert_called_once_with(ctx, rows_hidden=source_hidden)
+        engine.launch_step.assert_called_once_with(source_hidden, target_hidden)
+        engine.launch_forward.assert_not_called()
+        engine.launch_target.assert_not_called()
+        engine.launch_delayed_backward.assert_not_called()
+
+        consumer.on_step_end(ctx)
+        engine.launch_delayed_backward.assert_called_once_with(2, prompt_idxs=(7, 9))
+
+    def test_consume_bundle_passes_device_lease_to_engine_owned_step_stage(self) -> None:
+        engine = mock.Mock()
+        consumer = ESampConsumer(ESampConsumerConfig(graph_scratch_rows=4), engine=engine)
+        source_hidden = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+        target_hidden = torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.float32)
+        ctx = self._ctx()
+        bundle = PortBundle(
+            key=BundleKey(engine_step_id=1, phase="decode", request_id="reqA", sample_idx=0),
+            entries={
+                "device_lease": DeviceTensorLease(
+                    entries={"source": source_hidden, "target": target_hidden},
+                    active_rows=2,
+                ),
+                "request_meta": RowBatchMeta(
+                    request_ids=("reqA", "reqB"),
+                    prompt_idxs=(7, 9),
+                    sample_idxs=(0, 1),
+                    phase="decode",
+                    engine_step_id=1,
+                ),
+            },
+        )
+
+        with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None) as p_prepare:
+            consumer.consume_bundle(bundle, ctx)
+
+        p_prepare.assert_called_once_with(ctx, rows_hidden=source_hidden)
+        engine.launch_step.assert_called_once_with(source_hidden, target_hidden)
+        engine.launch_forward.assert_not_called()
+        engine.launch_target.assert_not_called()
+
+    def test_consume_bundle_uses_only_active_device_lease_rows(self) -> None:
+        engine = mock.Mock()
+        consumer = ESampConsumer(ESampConsumerConfig(graph_scratch_rows=4), engine=engine)
+        source_hidden = torch.tensor(
+            [[1.0, 2.0], [3.0, 4.0], [99.0, 99.0], [88.0, 88.0]],
+            dtype=torch.float32,
+        )
+        target_hidden = source_hidden + 10.0
+        ctx = self._ctx()
+        bundle = PortBundle(
+            key=BundleKey(engine_step_id=1, phase="decode", request_id="reqA", sample_idx=0),
+            entries={
+                "device_lease": DeviceTensorLease(
+                    entries={"source": source_hidden, "target": target_hidden},
+                    active_rows=2,
+                ),
+                "request_meta": RowBatchMeta(
+                    request_ids=("reqA", "reqB"),
+                    prompt_idxs=(7, 9),
+                    sample_idxs=(0, 1),
+                    phase="decode",
+                    engine_step_id=1,
+                ),
+            },
+        )
+
+        with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None):
+            consumer.consume_bundle(bundle, ctx)
+
+        staged_source = engine.launch_step.call_args.args[0]
+        staged_target = engine.launch_step.call_args.args[1]
+        self.assertEqual(tuple(staged_source.shape), (2, 2))
+        self.assertTrue(torch.equal(staged_source, source_hidden[:2]))
+        self.assertTrue(torch.equal(staged_target, target_hidden[:2]))
+
+    def test_consume_bundle_accepts_typed_row_batch_meta(self) -> None:
+        engine = mock.Mock()
+        consumer = ESampConsumer(ESampConsumerConfig(graph_scratch_rows=4), engine=engine)
+        source_hidden = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+        target_hidden = torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.float32)
+        ctx = self._ctx()
+        bundle = PortBundle(
+            key=BundleKey(engine_step_id=1, phase="decode", request_id="reqA", sample_idx=0),
+            entries={
+                "device_lease": DeviceTensorLease(
+                    entries={"source": source_hidden, "target": target_hidden},
+                    active_rows=2,
+                ),
+                "request_meta": RowBatchMeta(
+                    request_ids=("reqA", "reqB"),
+                    prompt_idxs=(7, 9),
+                    sample_idxs=(0, 1),
+                    phase="decode",
+                    engine_step_id=1,
+                ),
+            },
+        )
+
+        with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None):
+            consumer.consume_bundle(bundle, ctx)
+
+        consumer.on_step_end(ctx)
+        engine.launch_delayed_backward.assert_called_once_with(2, prompt_idxs=(7, 9))
+
+    def test_model_bank_consume_bundle_trusts_first_per_prompt_compacted_metadata(self) -> None:
+        engine = mock.Mock()
+        consumer = ESampConsumer(
+            ESampConsumerConfig(
+                graph_scratch_rows=4,
+                per_request_models=True,
+                per_request_model_bank=True,
+            ),
+            engine=engine,
+        )
+        source_hidden = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+        target_hidden = torch.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=torch.float32)
+        ctx = self._ctx()
+        bundle = PortBundle(
+            key=BundleKey(engine_step_id=1, phase="decode", request_id="reqA", sample_idx=0),
+            entries={
+                "device_lease": DeviceTensorLease(
+                    entries={"source": source_hidden, "target": target_hidden},
+                    active_rows=2,
+                ),
+                "request_meta": RowBatchMeta(
+                    request_ids=("reqA", "reqB"),
+                    prompt_idxs=(7, 9),
+                    sample_idxs=(0, 0),
+                    phase="decode",
+                    engine_step_id=1,
+                    row_compaction="first_per_prompt",
+                    row_ids=(0, 3),
+                ),
+            },
+        )
+
+        with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None):
+            consumer.consume_bundle(bundle, ctx)
+
+        self.assertEqual(tuple(engine.launch_step.call_args.args[0].shape), (2, 2))
+        self.assertEqual(tuple(engine.launch_step.call_args.args[1].shape), (2, 2))
+        consumer.on_step_end(ctx)
+        engine.launch_delayed_backward.assert_called_once_with(2, prompt_idxs=(7, 9))
+
+    def test_consume_bundle_rejects_typed_metadata_outside_active_lease_rows(self) -> None:
+        engine = mock.Mock()
+        consumer = ESampConsumer(ESampConsumerConfig(graph_scratch_rows=4), engine=engine)
+        source_hidden = torch.tensor(
+            [[1.0, 2.0], [3.0, 4.0], [99.0, 99.0], [88.0, 88.0]],
+            dtype=torch.float32,
+        )
+        target_hidden = source_hidden + 10.0
+        ctx = self._ctx()
+        bundle = PortBundle(
+            key=BundleKey(engine_step_id=1, phase="decode", request_id="reqA", sample_idx=0),
+            entries={
+                "device_lease": DeviceTensorLease(
+                    entries={"source": source_hidden, "target": target_hidden},
+                    active_rows=2,
+                ),
+                "request_meta": RowBatchMeta(
+                    request_ids=("reqA", "reqB", "staleA", "staleB"),
+                    prompt_idxs=(7, 9, 99, 88),
+                    sample_idxs=(0, 1, 0, 0),
+                    phase="decode",
+                    engine_step_id=1,
+                ),
+            },
+        )
+
+        with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "metadata to match active lease rows"):
+                consumer.consume_bundle(bundle, ctx)
+
+        engine.launch_step.assert_not_called()
+        engine.launch_forward.assert_not_called()
+        engine.launch_target.assert_not_called()
+
+    def test_consume_bundle_rejects_legacy_metadata_outside_active_lease_rows(self) -> None:
+        engine = mock.Mock()
+        consumer = ESampConsumer(ESampConsumerConfig(graph_scratch_rows=4), engine=engine)
+        source_hidden = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+        target_hidden = source_hidden + 10.0
+        ctx = self._ctx()
+        bundle = PortBundle(
+            key=BundleKey(engine_step_id=1, phase="decode", request_id="reqA", sample_idx=0),
+            entries={
+                "device_lease": DeviceTensorLease(
+                    entries={"source": source_hidden, "target": target_hidden},
+                    active_rows=2,
+                ),
+                "request_meta": [{"prompt_idx": 7, "sample_idx": 0}],
+            },
+        )
+
+        with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "RowBatchMeta"):
+                consumer.consume_bundle(bundle, ctx)
+
+        engine.launch_step.assert_not_called()
+        engine.launch_forward.assert_not_called()
+        engine.launch_target.assert_not_called()
+
+    def test_consume_bundle_rejects_legacy_dict_metadata_even_when_rows_match(self) -> None:
+        engine = mock.Mock()
+        consumer = ESampConsumer(ESampConsumerConfig(graph_scratch_rows=4), engine=engine)
+        source_hidden = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32)
+        target_hidden = source_hidden + 10.0
+        ctx = self._ctx()
+        bundle = PortBundle(
+            key=BundleKey(engine_step_id=1, phase="decode", request_id="reqA", sample_idx=0),
+            entries={
+                "device_lease": DeviceTensorLease(
+                    entries={"source": source_hidden, "target": target_hidden},
+                    active_rows=2,
+                ),
                 "request_meta": [
                     {"prompt_idx": 7, "sample_idx": 0},
                     {"prompt_idx": 9, "sample_idx": 1},
@@ -108,18 +399,11 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
             },
         )
 
-        with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None) as p_prepare:
-            consumer._source_stage = torch.zeros((4, 2), dtype=torch.float32)
-            consumer._target_stage = torch.zeros((4, 2), dtype=torch.float32)
-            consumer.consume_bundle(bundle, ctx)
+        with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "RowBatchMeta"):
+                consumer.consume_bundle(bundle, ctx)
 
-        p_prepare.assert_called_once_with(ctx, rows_hidden=source_hidden)
-        self.assertEqual(engine.launch_forward.call_count, 1)
-        self.assertEqual(engine.launch_target.call_count, 1)
-        engine.launch_delayed_backward.assert_not_called()
-
-        consumer.apply_feedback(ctx)
-        engine.launch_delayed_backward.assert_called_once_with(2, prompt_idxs=[7, 9])
+        engine.launch_step.assert_not_called()
 
     def test_model_bank_consume_bundle_stages_one_row_per_prompt(self) -> None:
         engine = mock.Mock()
@@ -139,29 +423,26 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
             entries={
                 "source": source_hidden,
                 "target": target_hidden,
-                "request_meta": [
-                    {"prompt_idx": 7, "sample_idx": 0},
-                    {"prompt_idx": 7, "sample_idx": 1},
-                    {"prompt_idx": 7, "sample_idx": 2},
-                    {"prompt_idx": 9, "sample_idx": 0},
-                    {"prompt_idx": 9, "sample_idx": 1},
-                    {"prompt_idx": 9, "sample_idx": 2},
-                ],
+                "request_meta": RowBatchMeta(
+                    request_ids=("reqA", "reqA", "reqA", "reqB", "reqB", "reqB"),
+                    prompt_idxs=(7, 7, 7, 9, 9, 9),
+                    sample_idxs=(0, 1, 2, 0, 1, 2),
+                    phase="decode",
+                    engine_step_id=1,
+                ),
             },
         )
 
         with mock.patch.object(consumer, "_ensure_runtime_resources", return_value=None):
-            consumer._source_stage = torch.zeros((6, 2), dtype=torch.float32)
-            consumer._target_stage = torch.zeros((6, 2), dtype=torch.float32)
             consumer.consume_bundle(bundle, ctx)
 
-        staged_source = engine.launch_forward.call_args.args[0]
-        staged_target = engine.launch_target.call_args.args[0]
+        staged_source = engine.launch_step.call_args.args[0]
+        staged_target = engine.launch_step.call_args.args[1]
         self.assertTrue(torch.equal(staged_source[:2], source_hidden[[0, 3]]))
         self.assertTrue(torch.equal(staged_target[:2], target_hidden[[0, 3]]))
 
-        consumer.apply_feedback(ctx)
-        engine.launch_delayed_backward.assert_called_once_with(2, prompt_idxs=[7, 9])
+        consumer.on_step_end(ctx)
+        engine.launch_delayed_backward.assert_called_once_with(2, prompt_idxs=(7, 9))
 
     def test_consume_bundle_rejects_mismatched_source_target_row_counts(self) -> None:
         engine = mock.Mock()
@@ -214,21 +495,6 @@ class ESampConsumerContractUnitTest(unittest.TestCase):
         )
 
         self.assertNotIn("self._engine.state.model_bank_initializer", text)
-
-    def test_stage_rows_requires_prepared_stage_buffer(self) -> None:
-        consumer = ESampConsumer(ESampConsumerConfig(), engine=mock.Mock())
-        rows_hidden = torch.randn((2, 8), dtype=torch.float32)
-
-        with self.assertRaisesRegex(RuntimeError, "stage buffer"):
-            consumer._stage_rows(rows_hidden, stage=None)
-
-    def test_stage_rows_rejects_shape_mismatch_after_resources_are_prepared(self) -> None:
-        consumer = ESampConsumer(ESampConsumerConfig(), engine=mock.Mock())
-        rows_hidden = torch.randn((2, 8), dtype=torch.float32)
-        wrong_stage = torch.zeros((1, 8), dtype=torch.float32)
-
-        with self.assertRaisesRegex(RuntimeError, "stage buffer"):
-            consumer._stage_rows(rows_hidden, stage=wrong_stage)
 
     def test_configure_esamp_runtime_installs_esamp_consumer(self) -> None:
         esamp_support.configure_esamp_runtime(

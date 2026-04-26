@@ -14,6 +14,7 @@ from torch.autograd.profiler import record_function
 
 from tllm.consumers.esamp.config import ESampConsumerConfig
 from tllm.consumers.esamp.engine import ESampTrainEngine
+from tllm.runtime.residual_runtime import SamplerPrecomputeCache
 from tllm.runtime.sampler_bridge.provider import SamplerModifierProvider
 from tllm.runtime.sampler_bridge.types import CandidateModifierState, SamplerStepView
 
@@ -58,7 +59,7 @@ def _write_dense_logits(
 ) -> torch.Tensor:
     dense = _project_dense_logits(pred_hidden=pred_hidden, weight=weight, bias=bias)
     if (
-        isinstance(out, torch.Tensor)
+        out is not None
         and out.device == dense.device
         and out.dtype == dense.dtype
         and int(out.shape[0]) >= int(dense.shape[0])
@@ -89,6 +90,19 @@ def _first_prompt_rows(prompt_idxs: Sequence[int]) -> tuple[list[int], list[int]
             prompt_unique.append(prompt_key)
         row_map.append(-1 if mapped is None else int(mapped))
     return row_ids, prompt_unique, row_map
+
+
+def _runtime_prompt_tensor(*, runtime: Any, decode_count: int, device: torch.device) -> torch.Tensor | None:
+    count = int(decode_count)
+    if count <= 0:
+        return None
+    prompt_idx_tensor = getattr(runtime, "decode_prompt_idx_tensor", None)
+    if isinstance(prompt_idx_tensor, torch.Tensor) and int(prompt_idx_tensor.numel()) >= count:
+        return prompt_idx_tensor[:count].to(device=device, dtype=torch.long)
+    prompt_idxs = tuple(int(x) for x in list(getattr(runtime, "decode_prompt_idxs", []))[:count])
+    if len(prompt_idxs) != count:
+        return None
+    return torch.as_tensor(prompt_idxs, device=device, dtype=torch.long)
 
 
 @dataclass
@@ -130,106 +144,34 @@ class ESampSamplerModifierProvider(SamplerModifierProvider):
         source_hidden = getattr(runtime, "tap_decode_hidden", {}).get(source_path)
         if not isinstance(source_hidden, torch.Tensor):
             return
-        rows = int(source_hidden.shape[0])
-        hidden = int(source_hidden.shape[1])
-        if (
-            getattr(runtime, "sampler_precomputed_pred_hidden_full", None) is None
-            or tuple(runtime.sampler_precomputed_pred_hidden_full.shape) != (rows, hidden)
-            or runtime.sampler_precomputed_pred_hidden_full.device != source_hidden.device
-            or runtime.sampler_precomputed_pred_hidden_full.dtype != source_hidden.dtype
-        ):
-            runtime.sampler_precomputed_pred_hidden_full = torch.empty(
-                (rows, hidden),
-                device=source_hidden.device,
-                dtype=source_hidden.dtype,
-            )
-        if (
-            getattr(runtime, "sampler_precomputed_valid_mask", None) is None
-            or int(runtime.sampler_precomputed_valid_mask.numel()) != rows
-            or runtime.sampler_precomputed_valid_mask.device != source_hidden.device
-        ):
-            runtime.sampler_precomputed_valid_mask = torch.zeros((rows,), device=source_hidden.device, dtype=torch.bool)
-        if (
-            getattr(runtime, "sampler_precompute_source_hidden_full", None) is None
-            or tuple(runtime.sampler_precompute_source_hidden_full.shape) != (rows, hidden)
-            or runtime.sampler_precompute_source_hidden_full.device != source_hidden.device
-            or runtime.sampler_precompute_source_hidden_full.dtype != source_hidden.dtype
-        ):
-            runtime.sampler_precompute_source_hidden_full = torch.empty(
-                (rows, hidden),
-                device=source_hidden.device,
-                dtype=source_hidden.dtype,
-            )
-        if (
-            getattr(runtime, "sampler_precompute_prompt_idx_full", None) is None
-            or int(runtime.sampler_precompute_prompt_idx_full.numel()) != rows
-            or runtime.sampler_precompute_prompt_idx_full.device != source_hidden.device
-        ):
-            runtime.sampler_precompute_prompt_idx_full = torch.empty(
-                (rows,),
-                device=source_hidden.device,
-                dtype=torch.long,
-            )
-        if (
-            getattr(runtime, "sampler_precomputed_all_row_ids", None) is None
-            or int(runtime.sampler_precomputed_all_row_ids.numel()) != rows
-            or runtime.sampler_precomputed_all_row_ids.device != source_hidden.device
-        ):
-            runtime.sampler_precomputed_all_row_ids = torch.arange(rows, device=source_hidden.device, dtype=torch.long)
+        dense_vocab = None
         if self.config.distiller_sampler_backend in {"pre_filter_dense", "post_filter_dense_cache"}:
             weight, _ = self._get_lm_head_params(getattr(runner, "model", None))
-            vocab = int(weight.shape[0])
-            if (
-                getattr(runtime, "sampler_precomputed_dense_logits_full", None) is None
-                or tuple(runtime.sampler_precomputed_dense_logits_full.shape) != (rows, vocab)
-                or runtime.sampler_precomputed_dense_logits_full.device != source_hidden.device
-                or runtime.sampler_precomputed_dense_logits_full.dtype != torch.float32
-            ):
-                runtime.sampler_precomputed_dense_logits_full = torch.empty(
-                    (rows, vocab),
-                    device=source_hidden.device,
-                    dtype=torch.float32,
-                )
+            dense_vocab = int(weight.shape[0])
+        runtime.sampler_precompute.ensure_buffers(
+            source_hidden=source_hidden,
+            dense_vocab=dense_vocab,
+        )
 
     def maybe_prepare_decode_step(self, *, runtime: Any, runner: Any) -> None:
-        runtime.sampler_source_precompute_enabled = False
-        runtime.sampler_source_capture_step_id = -1
-        runtime.distiller_port_capture_step_id = -1
-        runtime.distiller_port_publish_step_id = -1
-        runtime.distiller_port_consume_step_id = -1
-        runtime.sampler_precomputed_step_id = int(getattr(runtime, "event_step_id", -1))
-        runtime.sampler_precomputed_row_ids = None
-        runtime.sampler_precomputed_pred_hidden = None
-        runtime.sampler_precomputed_dense_logits = None
-        runtime.sampler_precomputed_dense_logits_full = None
-        runtime.sampler_precomputed_pred_hidden_row_map = None
-        runtime.sampler_precomputed_all_rows = False
+        runtime.sampler_precompute.reset_decode_step(int(getattr(runtime, "event_step_id", -1)))
         if not self.is_active():
             return
         self.ensure_runtime_buffers(runtime=runtime, runner=runner)
-        valid_mask = getattr(runtime, "sampler_precomputed_valid_mask", None)
-        if isinstance(valid_mask, torch.Tensor):
-            valid_mask.zero_()
         decode_count = int(getattr(runtime, "decode_count", 0) or 0)
-        prompt_idx_tensor = getattr(runtime, "decode_prompt_idx_tensor", None)
-        if decode_count <= 0 or not isinstance(prompt_idx_tensor, torch.Tensor):
+        prompt_tensor = _runtime_prompt_tensor(runtime=runtime, decode_count=decode_count, device=torch.device("cpu"))
+        if prompt_tensor is None:
             return
         if self.engine.state.per_request_models and not self.engine.using_model_bank:
             return
         if self.engine.using_model_bank:
-            prompt_input: Sequence[int] | torch.Tensor
-            prompt_idxs = list(getattr(runtime, "decode_prompt_idxs", []))[:decode_count]
-            if len(prompt_idxs) == decode_count:
-                prompt_input = prompt_idxs
-            else:
-                prompt_input = prompt_idx_tensor[:decode_count]
-            runtime.sampler_source_precompute_enabled = bool(
-                self.engine.prepare_sampling_slots_for_step(prompt_input)
+            runtime.sampler_precompute.source_enabled = bool(
+                self.engine.assign_sampling_model_bank_slots(prompt_tensor)
             )
-            runtime.sampler_precomputed_all_rows = bool(runtime.sampler_source_precompute_enabled)
+            runtime.sampler_precompute.all_rows = bool(runtime.sampler_precompute.source_enabled)
             return
-        runtime.sampler_source_precompute_enabled = True
-        runtime.sampler_precomputed_all_rows = True
+        runtime.sampler_precompute.source_enabled = True
+        runtime.sampler_precompute.all_rows = True
 
     def maybe_capture_source_precompute(
         self,
@@ -246,129 +188,108 @@ class ESampSamplerModifierProvider(SamplerModifierProvider):
             return
         source_hidden = getattr(runtime, "tap_decode_hidden", {}).get(str(layer_path).strip())
         prompt_idx_tensor = getattr(runtime, "decode_prompt_idx_buf", None)
-        pred_hidden_full = getattr(runtime, "sampler_precomputed_pred_hidden_full", None)
-        valid_mask = getattr(runtime, "sampler_precomputed_valid_mask", None)
-        source_hidden_full = getattr(runtime, "sampler_precompute_source_hidden_full", None)
-        prompt_idx_full = getattr(runtime, "sampler_precompute_prompt_idx_full", None)
-        if (
-            not isinstance(source_hidden, torch.Tensor)
-            or not isinstance(prompt_idx_tensor, torch.Tensor)
-            or not isinstance(pred_hidden_full, torch.Tensor)
-            or not isinstance(valid_mask, torch.Tensor)
-            or not isinstance(source_hidden_full, torch.Tensor)
-            or not isinstance(prompt_idx_full, torch.Tensor)
-        ):
+        if not isinstance(source_hidden, torch.Tensor) or not isinstance(prompt_idx_tensor, torch.Tensor):
             return
-        dense_logits_full = getattr(runtime, "sampler_precomputed_dense_logits_full", None)
+        dense_vocab = None
+        if self.config.distiller_sampler_backend == "pre_filter_dense":
+            weight, _ = self._get_lm_head_params(getattr(runner, "model", None))
+            dense_vocab = int(weight.shape[0])
+        buffers = runtime.sampler_precompute.ensure_buffers(
+            source_hidden=source_hidden,
+            dense_vocab=dense_vocab,
+        )
+        dense_out = buffers.dense_logits
 
         def _run_capture(captured_hidden: torch.Tensor, captured_prompt_idxs: torch.Tensor) -> None:
             self.engine.predict_hidden_for_sampling_capture(
                 captured_hidden,
                 captured_prompt_idxs,
-                out_pred_hidden=pred_hidden_full,
-                out_valid_mask=valid_mask,
+                out_pred_hidden=buffers.pred_hidden,
+                out_valid_mask=buffers.valid_mask,
             )
             if self.config.distiller_sampler_backend == "pre_filter_dense":
                 weight, bias = self._get_lm_head_params(getattr(runner, "model", None))
-                runtime.sampler_precomputed_dense_logits_full = _write_dense_logits(
-                    pred_hidden=pred_hidden_full,
+                buffers.dense_logits = _write_dense_logits(
+                    pred_hidden=buffers.pred_hidden,
                     weight=weight,
                     bias=bias,
-                    out=dense_logits_full,
+                    out=dense_out,
                 )
-            runtime.sampler_source_capture_step_id = int(getattr(runtime, "event_step_id", -1))
+            runtime.sampler_precompute.source_capture_step_id = int(getattr(runtime, "event_step_id", -1))
 
         allow_async = bool(getattr(runtime, "sampler_allow_source_async", False))
         if source_hidden.device.type != "cuda" or not allow_async:
-            source_hidden_full.copy_(source_hidden)
-            prompt_idx_full.copy_(prompt_idx_tensor)
-            _run_capture(source_hidden_full, prompt_idx_full)
-            runtime.sampler_precompute_event = None
+            buffers.source_hidden.copy_(source_hidden)
+            buffers.prompt_idx.copy_(prompt_idx_tensor)
+            _run_capture(buffers.source_hidden, buffers.prompt_idx)
+            runtime.sampler_precompute.event = None
             return
 
-        stream = getattr(runtime, "sampler_precompute_stream", None)
+        stream = getattr(runtime.sampler_precompute, "stream", None)
         if stream is None:
             stream = _make_precompute_stream(source_hidden.device)
-            runtime.sampler_precompute_stream = stream
-        event = getattr(runtime, "sampler_precompute_event", None)
+            runtime.sampler_precompute.stream = stream
+        event = getattr(runtime.sampler_precompute, "event", None)
         if event is None:
             event = torch.cuda.Event(blocking=False)
-            runtime.sampler_precompute_event = event
+            runtime.sampler_precompute.event = event
         with torch.cuda.stream(stream), torch.no_grad():
             stream.wait_stream(torch.cuda.current_stream(device=source_hidden.device))
             timing_start = None
             timing_end = None
-            if bool(getattr(runtime, "distiller_timing_enabled", False)):
+            if bool(getattr(runtime.sampler_precompute, "timing_enabled", False)):
                 timing_start = torch.cuda.Event(enable_timing=True, blocking=False)
                 timing_end = torch.cuda.Event(enable_timing=True, blocking=False)
                 timing_start.record(stream)
             with _maybe_record_function("distiller.capture_precompute"):
-                source_hidden_full.copy_(source_hidden)
-                prompt_idx_full.copy_(prompt_idx_tensor)
-                _run_capture(source_hidden_full, prompt_idx_full)
+                buffers.source_hidden.copy_(source_hidden)
+                buffers.prompt_idx.copy_(prompt_idx_tensor)
+                _run_capture(buffers.source_hidden, buffers.prompt_idx)
             if timing_end is not None:
                 timing_end.record(stream)
-                runtime.distiller_precompute_event_pairs.append((timing_start, timing_end))
+                runtime.sampler_precompute.precompute_event_pairs.append((timing_start, timing_end))
             event.record(stream)
 
     def maybe_schedule_precompute(self, *, runtime: Any, runner: Any) -> None:
         with _maybe_record_function("distiller.schedule_precompute"):
-            if bool(getattr(runtime, "distiller_timing_enabled", False)):
-                runtime.distiller_schedule_attempt_count += 1
+            if bool(getattr(runtime.sampler_precompute, "timing_enabled", False)):
+                runtime.sampler_precompute.schedule_attempt_count += 1
             if not self.is_active():
                 return
             decode_count = int(getattr(runtime, "decode_count", 0) or 0)
             source_path = str(getattr(runtime, "source_resolved_path", "") or "").strip()
             if decode_count <= 0 or not source_path:
                 return
-            full_pred_hidden = getattr(runtime, "sampler_precomputed_pred_hidden_full", None)
-            full_valid_mask = getattr(runtime, "sampler_precomputed_valid_mask", None)
-            if (
-                bool(getattr(runtime, "sampler_source_precompute_enabled", False))
-                and isinstance(full_pred_hidden, torch.Tensor)
-                and isinstance(full_valid_mask, torch.Tensor)
-                and int(full_pred_hidden.shape[0]) >= decode_count
-                and int(full_valid_mask.numel()) >= decode_count
-                and int(getattr(runtime, "sampler_source_capture_step_id", -1)) == int(getattr(runtime, "event_step_id", -2))
-            ):
-                event = getattr(runtime, "sampler_precompute_event", None)
-                if event is not None and full_pred_hidden.device.type == "cuda":
-                    torch.cuda.current_stream(device=full_pred_hidden.device).wait_event(event)
-                runtime.sampler_precomputed_step_id = int(getattr(runtime, "event_step_id", -1))
-                runtime.sampler_precomputed_row_ids = None
-                runtime.sampler_precomputed_pred_hidden = None
-                runtime.sampler_precomputed_dense_logits = None
-                if (
-                    self.config.distiller_sampler_backend in {"pre_filter_dense", "post_filter_dense_cache"}
-                    and bool(getattr(runtime, "sampler_precomputed_all_rows", False))
-                ):
-                    full_dense_logits = getattr(runtime, "sampler_precomputed_dense_logits_full", None)
-                    if isinstance(full_dense_logits, torch.Tensor) and int(full_dense_logits.shape[0]) >= decode_count:
-                        runtime.sampler_precomputed_dense_logits = full_dense_logits[:decode_count]
-                if bool(getattr(runtime, "distiller_timing_enabled", False)):
-                    runtime.distiller_schedule_hit_count += 1
-                return
+            step_id = int(getattr(runtime, "event_step_id", -1))
+            if bool(getattr(runtime.sampler_precompute, "source_enabled", False)):
+                captured = runtime.sampler_precompute.captured_rows_for_step(
+                    step_id=step_id,
+                    decode_count=decode_count,
+                )
+                event = getattr(runtime.sampler_precompute, "event", None)
+                if captured is not None:
+                    if event is not None and captured.pred_hidden.device.type == "cuda":
+                        torch.cuda.current_stream(device=captured.pred_hidden.device).wait_event(event)
+                    runtime.sampler_precompute.cache = captured
+                    runtime.sampler_precompute.precomputed_step_id = step_id
+                    if bool(getattr(runtime.sampler_precompute, "timing_enabled", False)):
+                        runtime.sampler_precompute.schedule_hit_count += 1
+                    return
             source_hidden = getattr(runtime, "tap_decode_hidden", {}).get(source_path)
             if not isinstance(source_hidden, torch.Tensor) or int(source_hidden.shape[0]) < decode_count:
                 return
-            prompt_idx_tensor = getattr(runtime, "decode_prompt_idx_tensor", None)
-            if isinstance(prompt_idx_tensor, torch.Tensor) and int(prompt_idx_tensor.numel()) >= decode_count:
-                prompt_input: Sequence[int] | torch.Tensor = prompt_idx_tensor[:decode_count]
-            else:
-                prompt_input = tuple(int(x) for x in list(getattr(runtime, "decode_prompt_idxs", []))[:decode_count])
-            if (isinstance(prompt_input, tuple) and len(prompt_input) != decode_count) or (
-                isinstance(prompt_input, torch.Tensor) and int(prompt_input.numel()) != decode_count
-            ):
+            prompt_input = _runtime_prompt_tensor(runtime=runtime, decode_count=decode_count, device=source_hidden.device)
+            if prompt_input is None:
                 return
             full_row_map_tensor = None
             if self.engine.using_model_bank and self.config.distiller_sampler_backend in {"post_filter_exact", "post_filter_dense_cache"}:
-                prompt_list = tuple(int(x) for x in list(getattr(runtime, "decode_prompt_idxs", []))[:decode_count])
+                prompt_list = tuple(int(x) for x in prompt_input.detach().cpu().tolist())
                 if len(prompt_list) == decode_count:
                     unique_rows, unique_prompts, row_map = _first_prompt_rows(prompt_list)
                     if unique_rows and len(unique_rows) < decode_count:
                         unique_row_tensor = torch.as_tensor(unique_rows, device=source_hidden.device, dtype=torch.long)
                         active_hidden = source_hidden.index_select(0, unique_row_tensor)
-                        prompt_input = tuple(unique_prompts)
+                        prompt_input = torch.as_tensor(unique_prompts, device=source_hidden.device, dtype=torch.long)
                         full_row_map_tensor = torch.as_tensor(row_map, device=source_hidden.device, dtype=torch.long)
                     else:
                         active_hidden = source_hidden[:decode_count]
@@ -380,18 +301,14 @@ class ESampSamplerModifierProvider(SamplerModifierProvider):
             def _store(row_ids: torch.Tensor, pred_hidden: torch.Tensor) -> None:
                 store_row_ids = row_ids
                 if full_row_map_tensor is not None:
-                    all_row_ids = getattr(runtime, "sampler_precomputed_all_row_ids", None)
-                    if isinstance(all_row_ids, torch.Tensor) and int(all_row_ids.numel()) >= decode_count:
-                        store_row_ids = all_row_ids[:decode_count]
-                    else:
-                        store_row_ids = torch.arange(decode_count, device=row_ids.device, dtype=torch.long)
-                runtime.sampler_precomputed_step_id = int(getattr(runtime, "event_step_id", -1))
-                runtime.sampler_precomputed_row_ids = store_row_ids
-                runtime.sampler_precomputed_pred_hidden = pred_hidden
-                runtime.sampler_precomputed_pred_hidden_row_map = full_row_map_tensor
-                runtime.sampler_precomputed_dense_logits = None
-                runtime.sampler_precomputed_dense_logits_full = None
-                runtime.sampler_precomputed_all_rows = int(store_row_ids.numel()) == decode_count
+                    store_row_ids = torch.arange(decode_count, device=row_ids.device, dtype=torch.long)
+                runtime.sampler_precompute.store_cache(
+                    step_id=int(getattr(runtime, "event_step_id", -1)),
+                    row_ids=store_row_ids,
+                    pred_hidden=pred_hidden,
+                    pred_hidden_row_map=full_row_map_tensor,
+                    all_rows=int(store_row_ids.numel()) == decode_count,
+                )
 
             if active_hidden.device.type != "cuda":
                 row_ids, pred_hidden = self.engine.predict_hidden_for_sampling(
@@ -402,27 +319,29 @@ class ESampSamplerModifierProvider(SamplerModifierProvider):
                 _store(row_ids, pred_hidden)
                 if self.config.distiller_sampler_backend in {"pre_filter_dense", "post_filter_dense_cache"} and int(row_ids.numel()) > 0:
                     weight, bias = self._get_lm_head_params(getattr(runner, "model", None))
-                    runtime.sampler_precomputed_dense_logits = _project_dense_logits(
-                        pred_hidden=pred_hidden,
-                        weight=weight,
-                        bias=bias,
-                    )
-                runtime.sampler_precompute_event = None
+                    cache = runtime.sampler_precompute.cache_for_step(int(getattr(runtime, "event_step_id", -1)))
+                    if cache is not None:
+                        cache.dense_logits = _project_dense_logits(
+                            pred_hidden=pred_hidden,
+                            weight=weight,
+                            bias=bias,
+                        )
+                runtime.sampler_precompute.event = None
                 return
 
-            stream = getattr(runtime, "sampler_precompute_stream", None)
+            stream = getattr(runtime.sampler_precompute, "stream", None)
             if stream is None:
                 stream = _make_precompute_stream(active_hidden.device)
-                runtime.sampler_precompute_stream = stream
-            event = getattr(runtime, "sampler_precompute_event", None)
+                runtime.sampler_precompute.stream = stream
+            event = getattr(runtime.sampler_precompute, "event", None)
             if event is None:
                 event = torch.cuda.Event(blocking=False)
-                runtime.sampler_precompute_event = event
+                runtime.sampler_precompute.event = event
             with torch.cuda.stream(stream), torch.no_grad():
                 stream.wait_stream(torch.cuda.current_stream(device=active_hidden.device))
                 timing_start = None
                 timing_end = None
-                if bool(getattr(runtime, "distiller_timing_enabled", False)):
+                if bool(getattr(runtime.sampler_precompute, "timing_enabled", False)):
                     timing_start = torch.cuda.Event(enable_timing=True, blocking=False)
                     timing_end = torch.cuda.Event(enable_timing=True, blocking=False)
                     timing_start.record(stream)
@@ -435,16 +354,18 @@ class ESampSamplerModifierProvider(SamplerModifierProvider):
                 _store(row_ids, pred_hidden)
                 if self.config.distiller_sampler_backend in {"pre_filter_dense", "post_filter_dense_cache"} and int(row_ids.numel()) > 0:
                     weight, bias = self._get_lm_head_params(getattr(runner, "model", None))
-                    runtime.sampler_precomputed_dense_logits = _project_dense_logits(
-                        pred_hidden=pred_hidden,
-                        weight=weight,
-                        bias=bias,
-                    )
+                    cache = runtime.sampler_precompute.cache_for_step(int(getattr(runtime, "event_step_id", -1)))
+                    if cache is not None:
+                        cache.dense_logits = _project_dense_logits(
+                            pred_hidden=pred_hidden,
+                            weight=weight,
+                            bias=bias,
+                        )
                 if timing_end is not None:
                     timing_end.record(stream)
-                    runtime.distiller_precompute_event_pairs.append((timing_start, timing_end))
-                if bool(getattr(runtime, "distiller_timing_enabled", False)):
-                    runtime.distiller_schedule_hit_count += 1
+                    runtime.sampler_precompute.precompute_event_pairs.append((timing_start, timing_end))
+                if bool(getattr(runtime.sampler_precompute, "timing_enabled", False)):
+                    runtime.sampler_precompute.schedule_hit_count += 1
                 event.record(stream)
 
     def prepare_step(self, view: SamplerStepView) -> CandidateModifierState | None:
@@ -452,61 +373,38 @@ class ESampSamplerModifierProvider(SamplerModifierProvider):
             if not self.is_active():
                 return None
             runtime = getattr(view.runner, "_tllm_runtime", None)
-            if runtime is not None and int(getattr(runtime, "distiller_port_publish_step_id", -1)) != int(view.engine_step_id):
+            if runtime is not None and int(getattr(runtime.sampler_precompute, "port_publish_step_id", -1)) != int(view.engine_step_id):
                 return None
-            row_ids = None
-            pred_hidden = None
-            pred_hidden_row_map = None
-            cached_dense_logits = None
-            if runtime is not None and int(getattr(runtime, "sampler_precomputed_step_id", -1)) == int(view.engine_step_id):
-                event = getattr(runtime, "sampler_precompute_event", None)
+            cache = None
+            if runtime is not None:
+                event = getattr(runtime.sampler_precompute, "event", None)
                 if event is not None and view.device.type == "cuda":
                     current_stream = torch.cuda.current_stream(device=view.device)
                     timing_start = None
                     timing_end = None
-                    if bool(getattr(runtime, "distiller_timing_enabled", False)):
+                    if bool(getattr(runtime.sampler_precompute, "timing_enabled", False)):
                         timing_start = torch.cuda.Event(enable_timing=True, blocking=False)
                         timing_end = torch.cuda.Event(enable_timing=True, blocking=False)
                         timing_start.record(current_stream)
                     current_stream.wait_event(event)
                     if timing_end is not None:
                         timing_end.record(current_stream)
-                        runtime.distiller_wait_event_pairs.append((timing_start, timing_end))
-                cached_row_ids = getattr(runtime, "sampler_precomputed_row_ids", None)
-                cached_pred_hidden = getattr(runtime, "sampler_precomputed_pred_hidden", None)
-                cached_dense_logits_row = getattr(runtime, "sampler_precomputed_dense_logits", None)
-                if isinstance(cached_row_ids, torch.Tensor) and isinstance(cached_pred_hidden, torch.Tensor):
-                    row_ids = cached_row_ids
-                    pred_hidden = cached_pred_hidden
-                    pred_hidden_row_map = getattr(runtime, "sampler_precomputed_pred_hidden_row_map", None)
-                    cached_dense_logits = cached_dense_logits_row
-                full_pred_hidden = getattr(runtime, "sampler_precomputed_pred_hidden_full", None)
-                full_valid_mask = getattr(runtime, "sampler_precomputed_valid_mask", None)
-                full_dense_logits = getattr(runtime, "sampler_precomputed_dense_logits_full", None)
-                if (
-                    row_ids is None
-                    and isinstance(full_pred_hidden, torch.Tensor)
-                    and isinstance(full_valid_mask, torch.Tensor)
-                    and int(full_pred_hidden.shape[0]) >= int(view.decode_count)
-                    and int(full_valid_mask.numel()) >= int(view.decode_count)
-                    and int(getattr(runtime, "sampler_source_capture_step_id", -1)) == int(view.engine_step_id)
-                ):
-                    if bool(getattr(runtime, "sampler_precomputed_all_rows", False)):
-                        row_ids = torch.arange(view.decode_count, device=view.device, dtype=torch.long)
-                        pred_hidden = full_pred_hidden[: view.decode_count]
-                        if isinstance(full_dense_logits, torch.Tensor) and int(full_dense_logits.shape[0]) >= int(view.decode_count):
-                            cached_dense_logits = full_dense_logits[: view.decode_count]
-                    else:
-                        row_ids = full_valid_mask[: view.decode_count].nonzero(as_tuple=False).view(-1)
-                        if int(row_ids.numel()) > 0:
-                            pred_hidden = full_pred_hidden[: view.decode_count].index_select(0, row_ids)
-                            if isinstance(full_dense_logits, torch.Tensor) and int(full_dense_logits.shape[0]) >= int(view.decode_count):
-                                cached_dense_logits = full_dense_logits[: view.decode_count].index_select(0, row_ids)
-            if row_ids is None or pred_hidden is None:
-                prompt_input = view.prompt_idx_tensor if view.prompt_idx_tensor is not None else view.prompt_idxs
+                        runtime.sampler_precompute.wait_event_pairs.append((timing_start, timing_end))
+                cache = runtime.sampler_precompute.cache_for_step(int(view.engine_step_id))
+                if cache is None:
+                    cache = runtime.sampler_precompute.captured_rows_for_step(
+                        step_id=int(view.engine_step_id),
+                        decode_count=int(view.decode_count),
+                    )
+            if cache is None:
+                prompt_input = (
+                    view.prompt_idx_tensor.to(device=view.device, dtype=torch.long)
+                    if view.prompt_idx_tensor is not None
+                    else torch.as_tensor(tuple(int(x) for x in view.prompt_idxs), device=view.device, dtype=torch.long)
+                )
                 fallback_timing_start = None
                 fallback_timing_end = None
-                if bool(getattr(runtime, "distiller_timing_enabled", False)) and view.device.type == "cuda":
+                if runtime is not None and bool(getattr(runtime.sampler_precompute, "timing_enabled", False)) and view.device.type == "cuda":
                     current_stream = torch.cuda.current_stream(device=view.device)
                     fallback_timing_start = torch.cuda.Event(enable_timing=True, blocking=False)
                     fallback_timing_end = torch.cuda.Event(enable_timing=True, blocking=False)
@@ -517,22 +415,36 @@ class ESampSamplerModifierProvider(SamplerModifierProvider):
                         prompt_input,
                         assume_all_model_bank_slots_ready=bool(self.engine.using_model_bank),
                     )
-                if fallback_timing_end is not None:
+                if runtime is not None and fallback_timing_end is not None:
                     fallback_timing_end.record(torch.cuda.current_stream(device=view.device))
-                    runtime.distiller_fallback_event_pairs.append((fallback_timing_start, fallback_timing_end))
-                cached_dense_logits = None
-            if int(row_ids.numel()) <= 0:
+                    runtime.sampler_precompute.fallback_event_pairs.append((fallback_timing_start, fallback_timing_end))
+                cache = (
+                    runtime.sampler_precompute.store_cache(
+                        step_id=int(view.engine_step_id),
+                        row_ids=row_ids,
+                        pred_hidden=pred_hidden,
+                        all_rows=int(row_ids.numel()) == int(view.decode_count),
+                    )
+                    if runtime is not None
+                    else SamplerPrecomputeCache(
+                        step_id=int(view.engine_step_id),
+                        row_ids=row_ids,
+                        pred_hidden=pred_hidden,
+                        all_rows=int(row_ids.numel()) == int(view.decode_count),
+                    )
+                )
+            if int(cache.row_ids.numel()) <= 0:
                 return None
             lm_head = self._get_lm_head(view.model)
             if runtime is not None:
-                runtime.distiller_port_consume_step_id = int(view.engine_step_id)
+                runtime.sampler_precompute.port_consume_step_id = int(view.engine_step_id)
             return CandidateModifierState(
                 beta=float(self.config.distiller_beta),
                 backend=self.config.distiller_sampler_backend,
-                affected_row_ids=row_ids,
-                pred_hidden=pred_hidden,
+                affected_row_ids=cache.row_ids,
+                pred_hidden=cache.pred_hidden,
                 lm_head_weight=lm_head.weight,
                 lm_head_bias=getattr(lm_head, "bias", None),
-                precomputed_dense_logits=cached_dense_logits if isinstance(cached_dense_logits, torch.Tensor) else None,
-                pred_hidden_row_map=pred_hidden_row_map if isinstance(pred_hidden_row_map, torch.Tensor) else None,
+                precomputed_dense_logits=cache.dense_logits,
+                pred_hidden_row_map=cache.pred_hidden_row_map,
             )
