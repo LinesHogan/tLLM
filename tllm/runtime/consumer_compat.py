@@ -25,8 +25,8 @@ class SupportsTick(Protocol):
         ...
 
 
-class SupportsFeedback(Protocol):
-    def apply_feedback(self, ctx: RuntimeContext) -> None:
+class SupportsStepEnd(Protocol):
+    def on_step_end(self, ctx: RuntimeContext) -> None:
         ...
 
 
@@ -43,8 +43,8 @@ def consumer_subscriptions(consumer: SupportsSubscriptions | object) -> Sequence
     return tuple(subs) if subs is not None else ()
 
 
-def apply_feedback(consumer: SupportsFeedback | object, ctx: RuntimeContext) -> None:
-    fn = getattr(consumer, "apply_feedback", None)
+def on_step_end(consumer: SupportsStepEnd | object, ctx: RuntimeContext) -> None:
+    fn = getattr(consumer, "on_step_end", None)
     if callable(fn):
         fn(ctx)
 
@@ -65,7 +65,9 @@ def dispatch_consumer_event(
         tick_fn(event_name, ctx)
 
     if event_name == "execute_model.post":
-        apply_feedback(consumer, ctx)
+        on_step_end(consumer, ctx)
+
+
 def synchronize(consumer: SupportsSynchronize | object) -> None:
     fn = getattr(consumer, "synchronize", None)
     if callable(fn):

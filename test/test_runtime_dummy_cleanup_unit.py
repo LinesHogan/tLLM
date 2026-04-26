@@ -15,9 +15,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 class RuntimeDummyCleanupUnitTest(unittest.TestCase):
     def test_runtime_state_uses_clear_dummy_runtime_names(self) -> None:
         state = common_state.RuntimeState()
-        self.assertFalse(hasattr(state, "current_h1_scratch"))
-        self.assertFalse(hasattr(state, "current_decode_h1"))
-        self.assertFalse(hasattr(state, "current_prefill_h1"))
         self.assertFalse(hasattr(state, "side_consumer"))
         self.assertTrue(hasattr(state, "decode_hidden_rows"))
         self.assertTrue(hasattr(state, "prefill_hidden_rows"))

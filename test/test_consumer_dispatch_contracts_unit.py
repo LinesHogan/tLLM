@@ -37,7 +37,7 @@ class _DummyConsumer(BaseConsumer):
     def on_tick(self, event_name: str, ctx: RuntimeContext) -> None:
         _ = (event_name, ctx)
 
-    def apply_feedback(self, ctx: RuntimeContext) -> None:
+    def on_step_end(self, ctx: RuntimeContext) -> None:
         _ = ctx
 
 
@@ -68,7 +68,7 @@ class _FlowConsumer(BaseConsumer):
     def on_tick(self, event_name: str, ctx: RuntimeContext) -> None:
         _ = (event_name, ctx)
 
-    def apply_feedback(self, ctx: RuntimeContext) -> None:
+    def on_step_end(self, ctx: RuntimeContext) -> None:
         _ = ctx
 
 
@@ -193,7 +193,7 @@ class ConsumerDispatchContractsUnitTest(unittest.TestCase):
             def on_tick(self, event_name: str, ctx: RuntimeContext) -> None:
                 _ = (event_name, ctx)
 
-            def apply_feedback(self, ctx: RuntimeContext) -> None:
+            def on_step_end(self, ctx: RuntimeContext) -> None:
                 _ = ctx
 
         flow_consumer = _ResidualFlowConsumer(cid="flow")

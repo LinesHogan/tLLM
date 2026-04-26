@@ -189,7 +189,7 @@ class DummyConsumerUnitTest(unittest.TestCase):
             event_name="flow:background",
         )
         c.consume_bundle(bundle, ctx)
-        c.apply_feedback(ctx)
+        c.on_step_end(ctx)
 
         stats = c.read_stats()
         self.assertEqual(stats["consumed_batches"], 1)
@@ -257,7 +257,7 @@ class DummyConsumerUnitTest(unittest.TestCase):
         ) as p_print, mock.patch("torch.randn_like", return_value=torch.ones((2, 3), dtype=torch.float32)):
             c.consume_bundle(bundle, ctx)
             before = c.read_stats()
-            c.apply_feedback(ctx)
+            c.on_step_end(ctx)
             after = c.read_stats()
 
         self.assertTrue(p_clone.called)
@@ -292,7 +292,7 @@ class DummyConsumerUnitTest(unittest.TestCase):
 
         with mock.patch("builtins.print") as p_print, mock.patch("torch.randn_like", return_value=torch.ones((8, 4), dtype=torch.float32)):
             c.consume_bundle(bundle, ctx)
-            c.apply_feedback(ctx)
+            c.on_step_end(ctx)
 
         stats = c.read_stats()
         self.assertEqual(stats["consumed_batches"], 1.0)
@@ -324,10 +324,10 @@ class DummyConsumerUnitTest(unittest.TestCase):
         with mock.patch("torch.randn_like", return_value=torch.ones((2, 3), dtype=torch.float32)):
             for _ in range(3):
                 c.consume_bundle(bundle, ctx)
-                c.apply_feedback(ctx)
+                c.on_step_end(ctx)
             mid = c.read_stats()
             c.consume_bundle(bundle, ctx)
-            c.apply_feedback(ctx)
+            c.on_step_end(ctx)
             end = c.read_stats()
 
         self.assertEqual(mid["pending"], 3.0)
@@ -367,7 +367,7 @@ class DummyConsumerUnitTest(unittest.TestCase):
         with mock.patch("builtins.print") as p_print, mock.patch("torch.randn_like", return_value=torch.ones((2, 3), dtype=torch.float32)):
             for _ in range(4):
                 c.consume_bundle(bundle, ctx)
-                c.apply_feedback(ctx)
+                c.on_step_end(ctx)
             mid = c.read_stats()
             c.synchronize()
             end = c.read_stats()

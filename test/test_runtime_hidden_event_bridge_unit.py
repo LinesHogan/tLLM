@@ -8,7 +8,9 @@ from unittest import mock
 
 import torch
 
+from tllm.contracts.subscription import ConsumerSubscription
 from tllm.ports.residual_stream import ResidualLocator
+from tllm.runtime.dispatch_plan import DispatchPlan
 from tllm.runtime.ports.residual_bindings import ResidualPathBinding
 from tllm.runtime import hidden_event_bridge
 
@@ -25,6 +27,8 @@ class RuntimeHiddenEventBridgeUnitTest(unittest.TestCase):
         runtime.decode_count = 2
         runtime.decode_prompt_idxs = [10, 11]
         runtime.decode_sample_idxs = [0, 1]
+        runtime.decode_prompt_idx_tensor = None
+        runtime.decode_sample_idx_tensor = None
         runtime.decode_request_ids = ["reqA", "reqB"]
         runtime.residual_bindings = {
             "layers.0": ResidualPathBinding(
@@ -43,6 +47,34 @@ class RuntimeHiddenEventBridgeUnitTest(unittest.TestCase):
         runtime.event_step_id = 9
         return type("Core", (), {"RUNTIME": runtime})()
 
+    class _LayerEventConsumer:
+        consumer_id = "layer-event"
+
+        def __init__(self) -> None:
+            self.seen_events: list[str] = []
+
+        def subscriptions(self):
+            return [
+                ConsumerSubscription(
+                    consumer_id=self.consumer_id,
+                    event_name="layer.post",
+                    phase_filter="decode",
+                    layer_filter="layers.0",
+                    capture_policy="never",
+                    dispatch_mode="inline",
+                )
+            ]
+
+        def flows(self):
+            return ()
+
+        def consume(self, batch, ctx) -> None:
+            _ = (batch, ctx)
+
+        def on_tick(self, event_name, ctx) -> None:
+            _ = ctx
+            self.seen_events.append(str(event_name))
+
     def test_build_runtime_hidden_batch_uses_active_decode_rows_and_metadata(self) -> None:
         core = self._core()
 
@@ -56,6 +88,18 @@ class RuntimeHiddenEventBridgeUnitTest(unittest.TestCase):
         self.assertTrue(torch.equal(batch.rows_hidden, torch.tensor([[1.0, 2.0], [3.0, 4.0]])))
         self.assertEqual(batch.metadata["prompt_idxs"], [10, 11])
         self.assertEqual(batch.metadata["sample_idxs"], [0, 1])
+
+    def test_build_runtime_hidden_batch_reuses_decode_metadata_tensors(self) -> None:
+        core = self._core()
+        core.RUNTIME.decode_prompt_idx_tensor = torch.tensor([10, 11], dtype=torch.long)
+        core.RUNTIME.decode_sample_idx_tensor = torch.tensor([0, 1], dtype=torch.long)
+
+        batch = hidden_event_bridge.build_runtime_hidden_batch(core=core, layer_path="layers.0")
+
+        self.assertIsNotNone(batch)
+        assert batch is not None
+        self.assertEqual(batch.prompt_idx.data_ptr(), core.RUNTIME.decode_prompt_idx_tensor.data_ptr())
+        self.assertEqual(batch.sample_idx.data_ptr(), core.RUNTIME.decode_sample_idx_tensor.data_ptr())
 
     def test_build_runtime_hidden_batch_rejects_inconsistent_decode_metadata(self) -> None:
         core = self._core()
@@ -84,7 +128,36 @@ class RuntimeHiddenEventBridgeUnitTest(unittest.TestCase):
         self.assertEqual(kwargs["event_name"], "layer.post")
         self.assertEqual(kwargs["phase"], "decode")
         self.assertEqual(kwargs["layer_path"], "layers.0")
-        self.assertIsNotNone(kwargs["batch"])
+        self.assertNotIn("batch", kwargs)
+        self.assertIn("batch_factory", kwargs)
+        batch = kwargs["batch_factory"]()
+        self.assertIsNotNone(batch)
+        assert batch is not None
+        self.assertEqual(batch.layer_path, "layers.0")
+
+    def test_dispatch_deferred_layer_batches_defers_batch_materialization_to_subscriber_path(self) -> None:
+        core = self._core()
+        runner = type("Runner", (), {"device": torch.device("cpu"), "model": object()})()
+
+        with mock.patch.object(hidden_event_bridge, "build_runtime_hidden_batch") as p_build, mock.patch.object(
+            hidden_event_bridge._common_hooks, "dispatch_runtime_event", return_value=0
+        ):
+            dispatched = hidden_event_bridge.dispatch_deferred_layer_batches(core=core, runner=runner)
+
+        self.assertEqual(dispatched, 0)
+        p_build.assert_not_called()
+
+    def test_dispatch_deferred_layer_batches_skips_subscriber_when_hidden_batch_is_missing(self) -> None:
+        core = self._core()
+        core.RUNTIME.decode_count = 0
+        consumer = self._LayerEventConsumer()
+        core.RUNTIME.dispatch_plan = DispatchPlan.build([consumer])
+        runner = type("Runner", (), {"device": torch.device("cpu"), "model": object()})()
+
+        dispatched = hidden_event_bridge.dispatch_deferred_layer_batches(core=core, runner=runner)
+
+        self.assertEqual(dispatched, 0)
+        self.assertEqual(consumer.seen_events, [])
 
     def test_dispatch_layer_lifecycle_events_emits_stack_end_only_for_target_layer(self) -> None:
         core = self._core()

@@ -22,6 +22,8 @@ class ResidualRuntimeSetup:
     runtime_bindings: Dict[str, ResidualPathBinding]
     hook_spec: tuple[tuple[str, ...], str, str]
     rows: int
+    compact_rows: int
+    capture_full_rows: bool
     hidden_size: int
     hidden_dtype: torch.dtype
     source_resolved: str
@@ -41,10 +43,15 @@ class RuntimeLike(Protocol):
     decode_valid_mask: torch.Tensor | None
     decode_prompt_idx_buf: torch.Tensor | None
     decode_sample_idx_buf: torch.Tensor | None
+    decode_compact_row_idx: torch.Tensor | None
+    decode_compact_count: int
+    decode_compact_row_ids: tuple[int, ...]
     decode_count: int
     tap_layers: dict[str, torch.nn.Module]
     tap_scratch: dict[str, torch.Tensor]
     tap_decode_hidden: dict[str, torch.Tensor]
+    tap_decode_hidden_compact: dict[str, torch.Tensor]
+    capture_full_residual_rows: bool
     residual_bindings: dict[str, ResidualPathBinding]
     source_resolved_path: str
     target_resolved_path: str
@@ -114,11 +121,17 @@ def resolve_runtime_setup(*, core: CoreLike, runner: object) -> ResidualRuntimeS
         rows = int(getattr(runner, "max_num_reqs", 0) or 0)
     if rows <= 0:
         raise RuntimeError("Please set graph_scratch_rows > 0 (or ensure runner.max_num_reqs > 0)")
-    if plan is not None and hasattr(plan, "max_residual_bundle_rows"):
-        row_cap = int(plan.max_residual_bundle_rows())
-        if row_cap > 0:
-            rows = min(rows, row_cap)
-
+    compact_rows = 0
+    compact_lane_enabled = bool(getattr(cfg, "compact_capture_lane", False))
+    if compact_lane_enabled and plan is not None and hasattr(plan, "has_residual_row_compaction") and plan.has_residual_row_compaction("first_per_prompt"):
+        compact_rows = int(plan.max_residual_compact_rows("first_per_prompt")) if hasattr(plan, "max_residual_compact_rows") else 0
+        if compact_rows <= 0:
+            compact_rows = rows
+    capture_full_rows = True
+    if plan is not None and hasattr(plan, "requires_full_residual_capture"):
+        capture_full_rows = bool(plan.requires_full_residual_capture())
+    if bool(getattr(cfg, "enable_distiller_intervention", False)):
+        capture_full_rows = True
     hidden_size = int(getattr(getattr(model, "config", None), "hidden_size", 0) or 0)
     if hidden_size <= 0:
         raise RuntimeError("Cannot infer hidden_size from model.config.hidden_size")
@@ -131,6 +144,8 @@ def resolve_runtime_setup(*, core: CoreLike, runner: object) -> ResidualRuntimeS
         runtime_bindings=runtime_bindings,
         hook_spec=hook_spec,
         rows=rows,
+        compact_rows=compact_rows,
+        capture_full_rows=bool(capture_full_rows),
         hidden_size=hidden_size,
         hidden_dtype=hidden_dtype,
         source_resolved=source_resolved,
@@ -154,6 +169,13 @@ def apply_runtime_setup(*, core: CoreLike, runner: object, setup: ResidualRuntim
         dtype=torch.long,
     )
     core.RUNTIME.decode_count = 0
+    if int(setup.compact_rows) > 0:
+        core.RUNTIME.decode_compact_row_idx = torch.zeros((int(setup.compact_rows),), device=getattr(runner, "device"), dtype=torch.long)
+    else:
+        core.RUNTIME.decode_compact_row_idx = None
+    core.RUNTIME.decode_compact_count = 0
+    core.RUNTIME.decode_compact_row_ids = ()
+    core.RUNTIME.capture_full_residual_rows = bool(setup.compact_rows <= 0 or setup.capture_full_rows)
 
     _residual_capture_buffers.initialize_runtime_tap_buffers(
         runtime=core.RUNTIME,
@@ -162,6 +184,7 @@ def apply_runtime_setup(*, core: CoreLike, runner: object, setup: ResidualRuntim
         rows=setup.rows,
         hidden_size=setup.hidden_size,
         hidden_dtype=setup.hidden_dtype,
+        compact_rows=int(setup.compact_rows),
     )
     core.RUNTIME.residual_bindings = setup.runtime_bindings
     core.RUNTIME.source_resolved_path = setup.source_resolved

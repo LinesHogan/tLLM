@@ -27,6 +27,8 @@ class RuntimeResidualRuntimeSetupUnitTest(unittest.TestCase):
                 "source_layer_path": "model.model.layers[0].input_layernorm",
                 "target_layer_path": "model.model.layers[-1].input_layernorm",
                 "graph_scratch_rows": 8,
+                "compact_capture_lane": False,
+                "enable_distiller_intervention": False,
             },
         )()
         runtime.residual_raw_paths = {
@@ -83,7 +85,7 @@ class RuntimeResidualRuntimeSetupUnitTest(unittest.TestCase):
         self.assertEqual(setup.target_resolved, "layers.1")
         self.assertEqual(tuple(sorted(setup.resolved_layers.keys())), ("layers.0", "layers.1"))
 
-    def test_resolve_runtime_setup_caps_rows_when_all_residual_flows_are_capped(self) -> None:
+    def test_resolve_runtime_setup_preserves_runner_capacity_when_residual_flows_are_capped(self) -> None:
         core = self._core()
         flow = ConsumerFlow(
             reads=(
@@ -99,12 +101,44 @@ class RuntimeResidualRuntimeSetupUnitTest(unittest.TestCase):
         consumer.flows.return_value = [flow]
         consumer.consumer_id = "row_cap"
         core.RUNTIME.dispatch_plan = DispatchPlan.build([consumer])
+        core.RUNTIME.config.compact_capture_lane = True
         model, _, _ = self._model()
         runner = type("Runner", (), {"model": model, "device": torch.device("cpu"), "max_num_reqs": 8})()
 
         setup = residual_runtime_setup.resolve_runtime_setup(core=core, runner=runner)
 
-        self.assertEqual(setup.rows, 1)
+        self.assertEqual(setup.rows, 8)
+
+    def test_apply_runtime_setup_allocates_compact_capture_buffers_for_compact_flow(self) -> None:
+        core = self._core()
+        flow = ConsumerFlow(
+            reads=(
+                ResidualStream.read(layer=0, site="block_output", phase="decode", role="hidden"),
+                RequestMeta.read(),
+            ),
+            writes=(),
+            window="background",
+            bundle_key=("engine_step_id", "phase"),
+            row_compaction="first_per_prompt",
+            max_bundle_rows=2,
+        )
+        consumer = mock.Mock()
+        consumer.flows.return_value = [flow]
+        consumer.consumer_id = "compact_rows"
+        core.RUNTIME.dispatch_plan = DispatchPlan.build([consumer])
+        core.RUNTIME.config.compact_capture_lane = True
+        model, _, _ = self._model()
+        runner = type("Runner", (), {"model": model, "device": torch.device("cpu"), "max_num_reqs": 8})()
+        setup = residual_runtime_setup.resolve_runtime_setup(core=core, runner=runner)
+
+        with mock.patch.object(residual_runtime_setup._residual_capture_hooks, "install_layer_forward_taps") as p_install:
+            residual_runtime_setup.apply_runtime_setup(core=core, runner=runner, setup=setup)
+
+        self.assertEqual(tuple(core.RUNTIME.decode_compact_row_idx.shape), (2,))
+        self.assertEqual(core.RUNTIME.decode_compact_count, 0)
+        self.assertIn("layers.0", core.RUNTIME.tap_decode_hidden_compact)
+        self.assertEqual(tuple(core.RUNTIME.tap_decode_hidden_compact["layers.0"].shape), (2, 4))
+        p_install.assert_called_once()
 
     def test_apply_runtime_setup_populates_runtime_state_and_installs_hooks(self) -> None:
         core = self._core()

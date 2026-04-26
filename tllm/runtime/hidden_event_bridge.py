@@ -21,6 +21,8 @@ class ResidualRuntimeLike(Protocol):
     decode_count: int
     decode_prompt_idxs: list[int]
     decode_sample_idxs: list[int]
+    decode_prompt_idx_tensor: torch.Tensor | None
+    decode_sample_idx_tensor: torch.Tensor | None
     source_resolved_path: str
     target_resolved_path: str
     event_step_id: int
@@ -46,6 +48,16 @@ def build_runtime_hidden_batch(*, core: EventCoreLike, layer_path: str) -> Hidde
         active = int(decode_row_idx.numel())
 
     _, prompt_idx, sample_idx = active_request_prompt_sample_metadata(core.RUNTIME, active)
+    prompt_tensor = getattr(core.RUNTIME, "decode_prompt_idx_tensor", None)
+    sample_tensor = getattr(core.RUNTIME, "decode_sample_idx_tensor", None)
+    if isinstance(prompt_tensor, torch.Tensor) and int(prompt_tensor.numel()) >= active:
+        prompt_idx_tensor = prompt_tensor[:active].to(device=decode_buf.device, dtype=torch.long)
+    else:
+        prompt_idx_tensor = torch.tensor(prompt_idx, device=decode_buf.device, dtype=torch.long)
+    if isinstance(sample_tensor, torch.Tensor) and int(sample_tensor.numel()) >= active:
+        sample_idx_tensor = sample_tensor[:active].to(device=decode_buf.device, dtype=torch.long)
+    else:
+        sample_idx_tensor = torch.tensor(sample_idx, device=decode_buf.device, dtype=torch.long)
 
     return HiddenBatch(
         step_id=int(core.RUNTIME.event_step_id),
@@ -54,8 +66,8 @@ def build_runtime_hidden_batch(*, core: EventCoreLike, layer_path: str) -> Hidde
         rows_hidden=decode_buf[:active],
         row_idx=decode_row_idx[:active],
         valid_mask=decode_valid_mask[:active, 0],
-        prompt_idx=torch.tensor(prompt_idx, device=decode_buf.device, dtype=torch.long),
-        sample_idx=torch.tensor(sample_idx, device=decode_buf.device, dtype=torch.long),
+        prompt_idx=prompt_idx_tensor,
+        sample_idx=sample_idx_tensor,
         metadata={
             "prompt_idxs": list(prompt_idx),
             "sample_idxs": list(sample_idx),
@@ -73,8 +85,28 @@ def dispatch_deferred_layer_batches(*, core: EventCoreLike, runner: RunnerLike) 
         if not layer_key or layer_key in seen:
             continue
         seen.add(layer_key)
-        batch = build_runtime_hidden_batch(core=core, layer_path=layer_key)
-        if batch is None:
+        plan = getattr(core.RUNTIME, "dispatch_plan", None)
+        if plan is not None:
+            targets = plan.select(
+                event_name="layer.post",
+                phase="decode",
+                layer_path=layer_key,
+                capture_enabled=False,
+            )
+            if not targets:
+                continue
+            batch = build_runtime_hidden_batch(core=core, layer_path=layer_key)
+            if batch is None:
+                continue
+            dispatched += _common_hooks.dispatch_runtime_event(
+                runtime=core.RUNTIME,
+                runner=runner,
+                event_name="layer.post",
+                phase="decode",
+                layer_path=layer_key,
+                capture_enabled=False,
+                batch=batch,
+            )
             continue
         dispatched += _common_hooks.dispatch_runtime_event(
             runtime=core.RUNTIME,
@@ -83,7 +115,7 @@ def dispatch_deferred_layer_batches(*, core: EventCoreLike, runner: RunnerLike) 
             phase="decode",
             layer_path=layer_key,
             capture_enabled=False,
-            batch=batch,
+            batch_factory=lambda layer_key=layer_key: build_runtime_hidden_batch(core=core, layer_path=layer_key),
         )
     return dispatched
 

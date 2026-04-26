@@ -9,6 +9,7 @@ from typing import Dict, Tuple
 import torch
 
 from tllm.producer.decode import (
+    DECODE_HIDDEN_ROWS_BUFFER,
     compute_decode_localization,
 )
 
@@ -30,6 +31,9 @@ def _make_resolver(base_map: Dict[str, int]):
 
 
 class DecodeLocalizationUnitTest(unittest.TestCase):
+    def test_decode_hidden_rows_buffer_name_is_descriptive(self) -> None:
+        self.assertEqual(DECODE_HIDDEN_ROWS_BUFFER, "decode_hidden_rows_buffer")
+
     def test_n_greater_than_one_decode_mapping(self) -> None:
         req_ids = ["reqA", "1_reqA", "2_reqA", "reqB", "1_reqB"]
         is_decode_req = [False, True, True, True, False]
@@ -101,6 +105,27 @@ class DecodeLocalizationUnitTest(unittest.TestCase):
         self.assertEqual(row_idx.tolist(), [4, 8])
         self.assertEqual(prompt_idxs, [3, 3])
         self.assertEqual(sample_idxs, [0, 1])
+
+    def test_contiguous_decode_positions_return_logits_indices_view(self) -> None:
+        req_ids = ["prefill", "reqA", "1_reqA", "reqB"]
+        is_decode_req = [False, True, True, True]
+        logits_indices = torch.tensor([3, 5, 9, 12], dtype=torch.long)
+        resolver = _make_resolver({"reqA": 0, "reqB": 1})
+
+        row_idx, prompt_idxs, sample_idxs, decode_positions = compute_decode_localization(
+            req_ids=req_ids,
+            is_decode_req=is_decode_req,
+            logits_indices=logits_indices,
+            num_actual_tokens=16,
+            resolve_prompt_sample_fn=resolver,
+        )
+
+        self.assertEqual(decode_positions, [1, 2, 3])
+        self.assertEqual(row_idx.tolist(), [5, 9, 12])
+        self.assertEqual(prompt_idxs, [0, 0, 1])
+        self.assertEqual(sample_idxs, [0, 1, 0])
+        self.assertEqual(row_idx.untyped_storage().data_ptr(), logits_indices.untyped_storage().data_ptr())
+        self.assertEqual(row_idx.storage_offset(), 1)
 
     def test_max_decode_rows_stops_before_resolving_unused_rows(self) -> None:
         req_ids = ["reqA", "reqB", "reqC"]

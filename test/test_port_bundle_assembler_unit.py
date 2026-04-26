@@ -23,7 +23,7 @@ class PortBundleAssemblerUnitTest(unittest.TestCase):
                 RequestMeta.read(),
             ),
             writes=(),
-            window="out_of_band_train",
+            window="out_of_band",
         )
 
     def _key(self, request_id: str = "req-1", sample_idx: int = 0) -> BundleKey:
@@ -114,7 +114,7 @@ class PortBundleAssemblerUnitTest(unittest.TestCase):
                 RequestMeta.read(),
             ),
             writes=(),
-            window="out_of_band_train",
+            window="out_of_band",
             bundle_key=("engine_step_id", "phase"),
         )
         assembler = BundleAssembler(flow)

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Dict, List, Mapping, Protocol, Sequence
 
 import torch
@@ -22,7 +23,6 @@ from tllm.runtime.vllm_patch.adapters import (
     get_prepare_inputs_adapter,
 )
 from tllm.runtime.vllm_patch import sampler_patch as _sampler_patch
-from tllm.runtime.consumer_compat import apply_feedback as apply_consumer_feedback
 from tllm.runtime.vllm_patch import common_hooks as _common_hooks
 
 RUNTIME_EVENT_POINTS = (
@@ -75,6 +75,9 @@ class PortRuntimeStateLike(Protocol):
     decode_prompt_idx_buf: torch.Tensor | None
     decode_sample_idx_buf: torch.Tensor | None
     tap_decode_hidden: dict[str, torch.Tensor]
+    decode_compact_row_idx: torch.Tensor | None
+    decode_compact_count: int
+    decode_compact_row_ids: tuple[int, ...]
     residual_raw_paths: dict[ResidualLocator, str]
     residual_bindings: dict[str, ResidualPathBinding]
     source_resolved_path: str
@@ -108,6 +111,54 @@ class PortDispatchCoreLike(Protocol):
     RUNTIME: PortRuntimeStateLike
 
 
+def _regular_position_view(tensor: torch.Tensor, positions: list[int]) -> torch.Tensor | None:
+    if not positions:
+        return tensor[:0]
+    if tensor.ndim != 1:
+        return None
+    if len(positions) == 1:
+        pos = int(positions[0])
+        if pos < 0 or pos >= int(tensor.numel()):
+            return None
+        return tensor[pos : pos + 1]
+    step = int(positions[1]) - int(positions[0])
+    if step <= 0:
+        return None
+    start = int(positions[0])
+    last = int(positions[-1])
+    if start < 0 or last >= int(tensor.numel()):
+        return None
+    for left, right in zip(positions, positions[1:]):
+        if int(right) - int(left) != step:
+            return None
+    return tensor.as_strided(
+        (len(positions),),
+        (int(tensor.stride(0)) * step,),
+        storage_offset=int(tensor.storage_offset()) + start * int(tensor.stride(0)),
+    )
+
+
+def _needs_device_decode_metadata(runtime: PortRuntimeStateLike) -> bool:
+    plan = getattr(runtime, "dispatch_plan", None)
+    if plan is None or not hasattr(plan, "requires_device_decode_metadata"):
+        return True
+    if bool(plan.requires_device_decode_metadata()):
+        return True
+    return _sampler_patch.runtime_has_active_sampler_provider(runtime)
+
+
+def _path_hotspots_enabled(core: object) -> bool:
+    runtime = getattr(core, "RUNTIME", None)
+    return bool(getattr(runtime, "path_hotspot_enabled", False)) and callable(getattr(core, "record_path_hotspot_cpu", None))
+
+
+def _record_cpu_hotspot(core: object, name: str, start_s: float, end_s: float) -> None:
+    if not _path_hotspots_enabled(core):
+        return
+    record = getattr(core, "record_path_hotspot_cpu")
+    record(name, float((end_s - start_s) * 1000.0))
+
+
 def prepare_decode_localization(
     *,
     core: DecodeHookCoreLike,
@@ -139,11 +190,6 @@ def prepare_decode_localization(
             "Active runtime requires decode scratch buffers decode_row_idx/decode_valid_mask/decode_prompt_idx_buf/decode_sample_idx_buf"
         )
 
-    with torch.no_grad():
-        decode_valid_mask.zero_()
-        decode_prompt_idx_buf.fill_(-1)
-        decode_sample_idx_buf.fill_(-1)
-
     common = core.pick_common_attn_metadata(attn_metadata, spec_decode_common)
     num_actual_tokens = int(getattr(common, "num_actual_tokens", 0) or 0) if common else 0
     if num_actual_tokens <= 0:
@@ -153,20 +199,16 @@ def prepare_decode_localization(
         core.RUNTIME.decode_request_ids = []
         core.RUNTIME.decode_prompt_idx_tensor = None
         core.RUNTIME.decode_sample_idx_tensor = None
+        core.RUNTIME.decode_compact_count = 0
+        core.RUNTIME.decode_compact_row_ids = ()
         return
 
-    plan = getattr(core.RUNTIME, "dispatch_plan", None)
-    row_cap = 0
-    if plan is not None and hasattr(plan, "max_residual_bundle_rows"):
-        row_cap = int(plan.max_residual_bundle_rows())
-
     raw_req_ids = runner.input_batch.req_ids[: runner.input_batch.num_reqs]
-    req_id_to_index = dict(runner.input_batch.req_id_to_index)
+    req_id_to_index = runner.input_batch.req_id_to_index
     num_prompt_tokens = runner.input_batch.num_prompt_tokens
     num_computed_tokens = runner.input_batch.num_computed_tokens_cpu
     req_ids: List[object] = []
     is_decode_req: List[bool] = []
-    capped_decode_count = 0
     for req_id in raw_req_ids:
         if req_id is None:
             continue
@@ -177,10 +219,6 @@ def prepare_decode_localization(
             continue
         is_decode = int(num_computed_tokens[req_idx]) >= int(num_prompt_tokens[req_idx])
         is_decode_req.append(is_decode)
-        if is_decode and row_cap > 0:
-            capped_decode_count += 1
-            if capped_decode_count >= row_cap:
-                break
 
     row_idx, prompt_idxs, sample_idxs, decode_positions = core.compute_decode_localization(
         req_ids=req_ids,
@@ -188,7 +226,7 @@ def prepare_decode_localization(
         logits_indices=logits_indices,
         num_actual_tokens=num_actual_tokens,
         resolve_prompt_sample_fn=core._resolve_prompt_sample_for_req_id,
-        max_decode_rows=row_cap,
+        max_decode_rows=0,
     )
     if row_idx.numel() == 0:
         core.RUNTIME.decode_count = 0
@@ -197,6 +235,8 @@ def prepare_decode_localization(
         core.RUNTIME.decode_request_ids = []
         core.RUNTIME.decode_prompt_idx_tensor = None
         core.RUNTIME.decode_sample_idx_tensor = None
+        core.RUNTIME.decode_compact_count = 0
+        core.RUNTIME.decode_compact_row_ids = ()
         return
 
     k = int(row_idx.numel())
@@ -209,18 +249,51 @@ def prepare_decode_localization(
     if row_idx.device != decode_row_idx.device:
         row_idx = row_idx.to(decode_row_idx.device)
 
+    needs_device_metadata = _needs_device_decode_metadata(core.RUNTIME)
     with torch.no_grad():
         decode_row_idx[:k].copy_(row_idx)
-        decode_valid_mask[:k].fill_(1.0)
-        decode_prompt_idx_buf[:k].copy_(torch.as_tensor(prompt_idxs, device=decode_row_idx.device, dtype=torch.long))
-        decode_sample_idx_buf[:k].copy_(torch.as_tensor(sample_idxs, device=decode_row_idx.device, dtype=torch.long))
+        if needs_device_metadata:
+            decode_valid_mask[:k].fill_(1.0)
+            decode_prompt_idx_buf[:k].copy_(torch.as_tensor(prompt_idxs, device=decode_row_idx.device, dtype=torch.long))
+            decode_sample_idx_buf[:k].copy_(torch.as_tensor(sample_idxs, device=decode_row_idx.device, dtype=torch.long))
 
     core.RUNTIME.decode_count = k
     core.RUNTIME.decode_prompt_idxs = [int(x) for x in prompt_idxs]
     core.RUNTIME.decode_sample_idxs = [int(x) for x in sample_idxs]
     core.RUNTIME.decode_request_ids = [str(req_ids[pos]) for pos in decode_positions[:k]]
-    core.RUNTIME.decode_prompt_idx_tensor = decode_prompt_idx_buf[:k]
-    core.RUNTIME.decode_sample_idx_tensor = decode_sample_idx_buf[:k]
+    if needs_device_metadata:
+        core.RUNTIME.decode_prompt_idx_tensor = decode_prompt_idx_buf[:k]
+        core.RUNTIME.decode_sample_idx_tensor = decode_sample_idx_buf[:k]
+    else:
+        core.RUNTIME.decode_prompt_idx_tensor = None
+        core.RUNTIME.decode_sample_idx_tensor = None
+
+    compact_row_idx = getattr(core.RUNTIME, "decode_compact_row_idx", None)
+    if isinstance(compact_row_idx, torch.Tensor):
+        seen: set[int] = set()
+        compact_positions: list[int] = []
+        for row_i, prompt_idx in enumerate(prompt_idxs[:k]):
+            prompt_key = int(prompt_idx)
+            if prompt_key < 0 or prompt_key in seen:
+                continue
+            seen.add(prompt_key)
+            compact_positions.append(int(row_i))
+        compact_count = len(compact_positions)
+        if compact_count > int(compact_row_idx.numel()):
+            raise RuntimeError(
+                f"compact decode rows exceed configured compact scratch rows: "
+                f"compact_rows={compact_count} capacity={int(compact_row_idx.numel())}. "
+                "Increase the compact flow capacity or graph_scratch_rows."
+            )
+        if compact_count > 0:
+            compact_rows = _regular_position_view(row_idx, compact_positions)
+            if compact_rows is None:
+                compact_pos_tensor = torch.as_tensor(compact_positions, device=row_idx.device, dtype=torch.long)
+                compact_rows = row_idx.index_select(0, compact_pos_tensor)
+            with torch.no_grad():
+                compact_row_idx[:compact_count].copy_(compact_rows)
+        core.RUNTIME.decode_compact_count = compact_count
+        core.RUNTIME.decode_compact_row_ids = tuple(compact_positions)
 
 
 def build_tap_path_list(*, core: PortDispatchCoreLike) -> List[str]:
@@ -260,12 +333,13 @@ def dispatch_decode_port_bundles(*, core: PortDispatchCoreLike, runner: RunnerLi
 
 def maybe_launch_post_logits_decode_work(*, core: Any, runner: Any) -> None:
     runtime = core.RUNTIME
+    precompute = runtime.sampler_precompute
     step_id = int(getattr(runtime, "event_step_id", -1))
     if step_id < 0:
         return
-    if not bool(getattr(runtime, "distiller_port_enabled", True)):
+    if not bool(getattr(precompute, "port_enabled", True)):
         return
-    runtime.distiller_port_publish_attempt_count = int(getattr(runtime, "distiller_port_publish_attempt_count", 0)) + 1
+    precompute.port_publish_attempt_count += 1
     if int(getattr(runtime, "decode_post_logits_launched_step_id", -1)) == step_id:
         return
     decode_count = int(getattr(runtime, "decode_count", 0) or 0)
@@ -274,8 +348,8 @@ def maybe_launch_post_logits_decode_work(*, core: Any, runner: Any) -> None:
 
     source_path = str(getattr(runtime, "source_resolved_path", "") or "").strip()
     if source_path:
-        runtime.distiller_port_publish_step_id = step_id
-        runtime.distiller_port_publish_hit_count = int(getattr(runtime, "distiller_port_publish_hit_count", 0)) + 1
+        precompute.port_publish_step_id = step_id
+        precompute.port_publish_hit_count += 1
         _sampler_patch.maybe_schedule_sampler_precompute(
             runtime=runtime,
             runner=runner,
@@ -450,7 +524,11 @@ def wrapped_prepare_inputs(*, core: Any, runner: Any, scheduler_output: Any) -> 
         core.RUNTIME.launch_consumer_from_hooks = not core._runner_uses_compilation_or_cudagraph(runner)
     else:
         setup_runtime_hooks_if_active(core=core, runner=runner)
+    trace_hotspots = _path_hotspots_enabled(core)
+    t0 = time.perf_counter() if trace_hotspots else 0.0
     out = core._ORIG_PREPARE_INPUTS(runner, scheduler_output)
+    t1 = time.perf_counter() if trace_hotspots else 0.0
+    _record_cpu_hotspot(core, "prepare_inputs.forward_cpu", t0, t1)
     core.RUNTIME.event_step_id += 1
     if isinstance(out, tuple):
         view = _prepare_inputs_adapter().unpack_prepare_inputs_output(
@@ -458,8 +536,13 @@ def wrapped_prepare_inputs(*, core: Any, runner: Any, scheduler_output: Any) -> 
             scheduler_output=scheduler_output,
             out=out,
         )
+        t2 = time.perf_counter() if trace_hotspots else 0.0
         prepare_decode_localization(core=core, runner=runner, out=out, prepare_inputs_view=view)
+        t3 = time.perf_counter() if trace_hotspots else 0.0
+        _record_cpu_hotspot(core, "prepare_inputs.decode_localization_cpu", t2, t3)
         _sampler_patch.maybe_prepare_sampler_decode_step(runtime=core.RUNTIME, runner=runner)
+        t4 = time.perf_counter() if trace_hotspots else 0.0
+        _record_cpu_hotspot(core, "prepare_inputs.sampler_prepare_cpu", t3, t4)
         _common_hooks.dispatch_runtime_event(
             runtime=core.RUNTIME,
             runner=runner,
@@ -475,6 +558,8 @@ def wrapped_prepare_inputs(*, core: Any, runner: Any, scheduler_output: Any) -> 
         core.RUNTIME.decode_request_ids = []
         core.RUNTIME.decode_prompt_idx_tensor = None
         core.RUNTIME.decode_sample_idx_tensor = None
+        core.RUNTIME.decode_compact_count = 0
+        core.RUNTIME.decode_compact_row_ids = ()
         _sampler_patch.maybe_prepare_sampler_decode_step(runtime=core.RUNTIME, runner=runner)
     return out
 
@@ -495,12 +580,22 @@ def wrapped_execute_model(*, core: Any, runner: Any, args: tuple, kwargs: dict) 
         core.RUNTIME.launch_consumer_from_hooks = not core._runner_uses_compilation_or_cudagraph(runner)
     else:
         setup_runtime_hooks_if_active(core=core, runner=runner)
+    trace_hotspots = _path_hotspots_enabled(core)
+    t0 = time.perf_counter() if trace_hotspots else 0.0
     out = core._ORIG_EXECUTE_MODEL(runner, *args, **kwargs)
+    t1 = time.perf_counter() if trace_hotspots else 0.0
+    _record_cpu_hotspot(core, "execute_model.forward_cpu", t0, t1)
     if not bool(getattr(getattr(runner, "model", None), _COMPUTE_LOGITS_HOOK_FLAG, False)):
         maybe_launch_post_logits_decode_work(core=core, runner=runner)
+    t2 = time.perf_counter() if trace_hotspots else 0.0
+    _record_cpu_hotspot(core, "execute_model.post_logits_cpu", t1, t2)
     dispatch_decode_port_bundles(core=core, runner=runner)
+    t3 = time.perf_counter() if trace_hotspots else 0.0
+    _record_cpu_hotspot(core, "execute_model.dispatch_bundles_cpu", t2, t3)
     if not core.RUNTIME.launch_consumer_from_hooks:
         _hidden_bridge.dispatch_deferred_layer_batches(core=core, runner=runner)
+    t4 = time.perf_counter() if trace_hotspots else 0.0
+    _record_cpu_hotspot(core, "execute_model.deferred_layers_cpu", t3, t4)
     _common_hooks.dispatch_runtime_event(
         runtime=core.RUNTIME,
         runner=runner,

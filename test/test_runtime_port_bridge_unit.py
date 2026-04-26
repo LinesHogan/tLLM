@@ -54,7 +54,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
         def on_tick(self, event_name, ctx) -> None:
             _ = (event_name, ctx)
 
-        def apply_feedback(self, ctx) -> None:
+        def on_step_end(self, ctx) -> None:
             _ = ctx
             self.feedback_calls += 1
 
@@ -76,7 +76,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                         RequestMeta.read(),
                     ),
                     writes=(),
-                    window="out_of_band_train",
+                    window="out_of_band",
                     bundle_key=("engine_step_id", "phase"),
                 )
             ]
@@ -90,7 +90,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
         def on_tick(self, event_name, ctx) -> None:
             _ = (event_name, ctx)
 
-        def apply_feedback(self, ctx) -> None:
+        def on_step_end(self, ctx) -> None:
             _ = ctx
             self.feedback_calls += 1
 
@@ -110,7 +110,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                         RequestMeta.read(),
                     ),
                     writes=(),
-                    window="out_of_band_train",
+                    window="out_of_band",
                     bundle_key=("engine_step_id", "phase"),
                 )
             ]
@@ -124,6 +124,39 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn("def ensure_runtime_hooks", text)
+
+    def test_execute_model_wrapper_records_cpu_path_hotspots_when_enabled(self) -> None:
+        runtime = SimpleNamespace(
+            path_hotspot_enabled=True,
+            launch_consumer_from_hooks=False,
+            event_step_id=1,
+        )
+        core = SimpleNamespace(
+            RUNTIME=runtime,
+            MODEL_HOOK_FLAG="_installed",
+            _ORIG_EXECUTE_MODEL=mock.Mock(return_value="ok"),
+            _runner_uses_compilation_or_cudagraph=mock.Mock(return_value=True),
+            record_path_hotspot_cpu=mock.Mock(),
+        )
+        runner = SimpleNamespace(model=SimpleNamespace(_installed=True))
+
+        with mock.patch.object(port_runtime_hooks.active_targets, "runtime_has_active_targets", return_value=True), mock.patch.object(
+            port_runtime_hooks._common_hooks, "dispatch_runtime_event"
+        ), mock.patch.object(port_runtime_hooks, "maybe_launch_post_logits_decode_work"), mock.patch.object(
+            port_runtime_hooks, "dispatch_decode_port_bundles", return_value=1
+        ), mock.patch.object(port_runtime_hooks._hidden_bridge, "dispatch_deferred_layer_batches"), mock.patch.object(
+            port_runtime_hooks, "time"
+        ) as time_mod:
+            time_mod.perf_counter.side_effect = [10.0, 10.5, 10.6, 10.7, 10.8]
+
+            out = port_runtime_hooks.wrapped_execute_model(core=core, runner=runner, args=(), kwargs={})
+
+        self.assertEqual(out, "ok")
+        recorded = {call.args[0]: call.args[1] for call in core.record_path_hotspot_cpu.call_args_list}
+        self.assertAlmostEqual(recorded["execute_model.forward_cpu"], 500.0)
+        self.assertAlmostEqual(recorded["execute_model.post_logits_cpu"], 100.0)
+        self.assertAlmostEqual(recorded["execute_model.dispatch_bundles_cpu"], 100.0)
+        self.assertAlmostEqual(recorded["execute_model.deferred_layers_cpu"], 100.0)
 
     def _core(self):
         runtime = type("Runtime", (), {})()
@@ -163,7 +196,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 RequestMeta.read(),
             ),
             writes=(),
-            window="out_of_band_train",
+            window="out_of_band",
         )
         assembler = BundleAssembler(flow)
 
@@ -255,7 +288,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
         self.assertEqual(dispatched, 0)
         consumer.consume_bundle.assert_not_called()
 
-    def test_runtime_can_build_direct_step_scope_bundle_with_row_cap(self) -> None:
+    def test_runtime_reports_direct_step_scope_row_cap_overflow(self) -> None:
         core = self._core()
         flow = ConsumerFlow(
             reads=(
@@ -268,14 +301,8 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
             max_bundle_rows=1,
         )
 
-        bundle = port_runtime_hooks.build_step_scope_port_bundle(core=core, flow=flow)
-
-        self.assertIsNotNone(bundle)
-        assert bundle is not None
-        self.assertTrue(torch.equal(bundle.entries["source"], torch.tensor([[1.0, 2.0]])))
-        self.assertEqual(bundle.entries["request_meta"], [
-            {"request_id": "reqA", "prompt_idx": 10, "sample_idx": 0, "phase": "decode", "engine_step_id": 9},
-        ])
+        with self.assertRaisesRegex(RuntimeError, "flow row cap exceeded"):
+            port_runtime_hooks.build_step_scope_port_bundle(core=core, flow=flow)
 
     def test_runtime_bridge_does_not_require_feedback_hook_for_step_scope_flow(self) -> None:
         core = self._core()
@@ -297,7 +324,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 RequestMeta.read(),
             ),
             writes=(),
-            window="out_of_band_train",
+            window="out_of_band",
             bundle_key=("engine_step_id", "phase"),
         )
 
@@ -343,7 +370,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
             def on_tick(self, event_name, ctx) -> None:
                 _ = (event_name, ctx)
 
-            def apply_feedback(self, ctx) -> None:
+            def on_step_end(self, ctx) -> None:
                 _ = ctx
 
         core = self._core()
@@ -402,25 +429,24 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "decode scratch|decode_row_idx|decode_valid_mask"):
             port_runtime_hooks.prepare_decode_localization(core=core, runner=runner, out=(None, None), prepare_inputs_view=view)
 
-    def test_prepare_decode_localization_respects_flow_row_cap_before_capacity_check(self) -> None:
+    def test_prepare_decode_localization_keeps_flow_row_cap_out_of_global_decode_state(self) -> None:
         core = type("Core", (), {})()
         runtime = type("Runtime", (), {})()
-        runtime.decode_row_idx = torch.zeros((1,), dtype=torch.long)
-        runtime.decode_valid_mask = torch.zeros((1, 1), dtype=torch.float32)
-        runtime.decode_prompt_idx_buf = torch.full((1,), -1, dtype=torch.long)
-        runtime.decode_sample_idx_buf = torch.full((1,), -1, dtype=torch.long)
+        runtime.decode_row_idx = torch.zeros((3,), dtype=torch.long)
+        runtime.decode_valid_mask = torch.zeros((3, 1), dtype=torch.float32)
+        runtime.decode_prompt_idx_buf = torch.full((3,), -1, dtype=torch.long)
+        runtime.decode_sample_idx_buf = torch.full((3,), -1, dtype=torch.long)
         runtime.decode_count = 0
         runtime.decode_prompt_idxs = []
         runtime.decode_sample_idxs = []
         runtime.decode_request_ids = []
-        runtime.dispatch_plan = SimpleNamespace(max_residual_bundle_rows=lambda: 1)
         core.RUNTIME = runtime
         core.pick_common_attn_metadata = staticmethod(lambda attn_metadata, spec_decode_common: attn_metadata)
         seen_max_rows: list[int] = []
 
         def _compute_decode_localization(**kwargs):
             seen_max_rows.append(int(kwargs["max_decode_rows"]))
-            return torch.tensor([4], dtype=torch.long), [10], [0], [0]
+            return torch.tensor([4, 5, 6], dtype=torch.long), [10, 11, 12], [0, 0, 0], [0, 1, 2]
 
         core.compute_decode_localization = staticmethod(_compute_decode_localization)
         core._resolve_prompt_sample_for_req_id = staticmethod(lambda req_id: (0, 0))
@@ -449,38 +475,46 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
 
         port_runtime_hooks.prepare_decode_localization(core=core, runner=runner, out=(None, None), prepare_inputs_view=view)
 
-        self.assertEqual(runtime.decode_count, 1)
-        self.assertEqual(runtime.decode_request_ids, ["reqA"])
-        self.assertEqual(runtime.decode_prompt_idxs, [10])
-        self.assertEqual(runtime.decode_sample_idxs, [0])
-        self.assertEqual(tuple(runtime.decode_row_idx.tolist()), (4,))
-        self.assertEqual(tuple(runtime.decode_valid_mask[:, 0].tolist()), (1.0,))
-        self.assertEqual(seen_max_rows, [1])
+        self.assertEqual(runtime.decode_count, 3)
+        self.assertEqual(runtime.decode_request_ids, ["reqA", "reqB", "reqC"])
+        self.assertEqual(runtime.decode_prompt_idxs, [10, 11, 12])
+        self.assertEqual(runtime.decode_sample_idxs, [0, 0, 0])
+        self.assertEqual(tuple(runtime.decode_row_idx.tolist()), (4, 5, 6))
+        self.assertEqual(tuple(runtime.decode_valid_mask[:, 0].tolist()), (1.0, 1.0, 1.0))
+        self.assertEqual(seen_max_rows, [0])
 
-    def test_prepare_decode_localization_stops_request_scan_after_row_cap(self) -> None:
+    def test_prepare_decode_localization_scans_all_decode_requests_independent_of_flow_cap(self) -> None:
         core = type("Core", (), {})()
         runtime = type("Runtime", (), {})()
-        runtime.decode_row_idx = torch.zeros((1,), dtype=torch.long)
-        runtime.decode_valid_mask = torch.zeros((1, 1), dtype=torch.float32)
-        runtime.decode_prompt_idx_buf = torch.full((1,), -1, dtype=torch.long)
-        runtime.decode_sample_idx_buf = torch.full((1,), -1, dtype=torch.long)
+        runtime.decode_row_idx = torch.zeros((3,), dtype=torch.long)
+        runtime.decode_valid_mask = torch.zeros((3, 1), dtype=torch.float32)
+        runtime.decode_prompt_idx_buf = torch.full((3,), -1, dtype=torch.long)
+        runtime.decode_sample_idx_buf = torch.full((3,), -1, dtype=torch.long)
         runtime.decode_count = 0
         runtime.decode_prompt_idxs = []
         runtime.decode_sample_idxs = []
         runtime.decode_request_ids = []
-        runtime.dispatch_plan = SimpleNamespace(max_residual_bundle_rows=lambda: 1)
         core.RUNTIME = runtime
         core.pick_common_attn_metadata = staticmethod(lambda attn_metadata, spec_decode_common: attn_metadata)
-        core.compute_decode_localization = staticmethod(
-            lambda **kwargs: (torch.tensor([4], dtype=torch.long), [10], [0], [0])
-        )
+        seen_req_ids: list[object] = []
+
+        def _compute_decode_localization(**kwargs):
+            seen_req_ids.extend(kwargs["req_ids"])
+            return torch.tensor([4, 5, 6], dtype=torch.long), [10, 11, 12], [0, 0, 0], [0, 1, 2]
+
+        core.compute_decode_localization = staticmethod(_compute_decode_localization)
         core._resolve_prompt_sample_for_req_id = staticmethod(lambda req_id: (10, 0))
 
-        class _GuardedTokens:
+        class _CountingTokens:
+            def __init__(self) -> None:
+                self.seen: list[int] = []
+
             def __getitem__(self, index):
-                if int(index) > 0:
-                    raise AssertionError("row-cap path should not inspect later requests")
+                self.seen.append(int(index))
                 return 1
+
+        prompt_tokens = _CountingTokens()
+        computed_tokens = _CountingTokens()
 
         runner = type("Runner", (), {})()
         runner.input_batch = type(
@@ -490,8 +524,8 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 "req_ids": ["reqA", "reqB", "reqC"],
                 "num_reqs": 3,
                 "req_id_to_index": {"reqA": 0, "reqB": 1, "reqC": 2},
-                "num_prompt_tokens": _GuardedTokens(),
-                "num_computed_tokens_cpu": _GuardedTokens(),
+                "num_prompt_tokens": prompt_tokens,
+                "num_computed_tokens_cpu": computed_tokens,
             },
         )()
         view = type(
@@ -506,7 +540,225 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
 
         port_runtime_hooks.prepare_decode_localization(core=core, runner=runner, out=(None, None), prepare_inputs_view=view)
 
+        self.assertEqual(runtime.decode_count, 3)
+        self.assertEqual(seen_req_ids, ["reqA", "reqB", "reqC"])
+        self.assertEqual(prompt_tokens.seen, [0, 1, 2])
+        self.assertEqual(computed_tokens.seen, [0, 1, 2])
+
+    def test_prepare_decode_localization_skips_device_metadata_when_no_consumer_needs_it(self) -> None:
+        core = type("Core", (), {})()
+        runtime = type("Runtime", (), {})()
+        runtime.decode_row_idx = torch.zeros((2,), dtype=torch.long)
+        runtime.decode_valid_mask = torch.zeros((2, 1), dtype=torch.float32)
+        runtime.decode_prompt_idx_buf = torch.full((2,), 77, dtype=torch.long)
+        runtime.decode_sample_idx_buf = torch.full((2,), 88, dtype=torch.long)
+        runtime.decode_count = 0
+        runtime.decode_prompt_idxs = []
+        runtime.decode_sample_idxs = []
+        runtime.decode_request_ids = []
+        runtime.decode_prompt_idx_tensor = torch.tensor([99], dtype=torch.long)
+        runtime.decode_sample_idx_tensor = torch.tensor([98], dtype=torch.long)
+        runtime.dispatch_plan = SimpleNamespace(requires_device_decode_metadata=lambda: False)
+        runtime.consumer = None
+        core.RUNTIME = runtime
+        core.pick_common_attn_metadata = staticmethod(lambda attn_metadata, spec_decode_common: attn_metadata)
+        core.compute_decode_localization = staticmethod(
+            lambda **_: (torch.tensor([4, 5], dtype=torch.long), [10, 11], [0, 1], [0, 1])
+        )
+        core._resolve_prompt_sample_for_req_id = staticmethod(lambda req_id: (0, 0))
+
+        runner = type("Runner", (), {})()
+        runner.input_batch = type(
+            "InputBatch",
+            (),
+            {
+                "req_ids": ["reqA", "reqB"],
+                "num_reqs": 2,
+                "req_id_to_index": {"reqA": 0, "reqB": 1},
+                "num_prompt_tokens": [1, 1],
+                "num_computed_tokens_cpu": [1, 1],
+            },
+        )()
+        view = type(
+            "View",
+            (),
+            {
+                "logits_indices": torch.tensor([4, 5], dtype=torch.long),
+                "attn_metadata": type("Common", (), {"num_actual_tokens": 8})(),
+                "spec_decode_common": None,
+            },
+        )()
+
+        port_runtime_hooks.prepare_decode_localization(core=core, runner=runner, out=(None, None), prepare_inputs_view=view)
+
+        self.assertEqual(runtime.decode_prompt_idxs, [10, 11])
+        self.assertEqual(runtime.decode_sample_idxs, [0, 1])
+        self.assertIsNone(runtime.decode_prompt_idx_tensor)
+        self.assertIsNone(runtime.decode_sample_idx_tensor)
+        self.assertEqual(tuple(runtime.decode_prompt_idx_buf.tolist()), (77, 77))
+        self.assertEqual(tuple(runtime.decode_sample_idx_buf.tolist()), (88, 88))
+        self.assertEqual(tuple(runtime.decode_valid_mask[:, 0].tolist()), (0.0, 0.0))
+
+    def test_prepare_decode_localization_keeps_first_per_prompt_compaction_flow_local(self) -> None:
+        core = type("Core", (), {})()
+        runtime = type("Runtime", (), {})()
+        runtime.decode_row_idx = torch.zeros((4,), dtype=torch.long)
+        runtime.decode_valid_mask = torch.zeros((4, 1), dtype=torch.float32)
+        runtime.decode_prompt_idx_buf = torch.full((4,), -1, dtype=torch.long)
+        runtime.decode_sample_idx_buf = torch.full((4,), -1, dtype=torch.long)
+        runtime.decode_count = 0
+        runtime.decode_prompt_idxs = []
+        runtime.decode_sample_idxs = []
+        runtime.decode_request_ids = []
+        runtime.dispatch_plan = SimpleNamespace()
+        core.RUNTIME = runtime
+        core.pick_common_attn_metadata = staticmethod(lambda attn_metadata, spec_decode_common: attn_metadata)
+        seen_max_rows: list[int] = []
+
+        def _compute_decode_localization(**kwargs):
+            seen_max_rows.append(int(kwargs["max_decode_rows"]))
+            return torch.tensor([4, 5, 6, 7], dtype=torch.long), [10, 10, 11, 11], [0, 1, 0, 1], [0, 1, 2, 3]
+
+        core.compute_decode_localization = staticmethod(_compute_decode_localization)
+        core._resolve_prompt_sample_for_req_id = staticmethod(lambda req_id: (0, 0))
+
+        runner = type("Runner", (), {})()
+        runner.input_batch = type(
+            "InputBatch",
+            (),
+            {
+                "req_ids": ["reqA0", "reqA1", "reqB0", "reqB1"],
+                "num_reqs": 4,
+                "req_id_to_index": {"reqA0": 0, "reqA1": 1, "reqB0": 2, "reqB1": 3},
+                "num_prompt_tokens": [1, 1, 1, 1],
+                "num_computed_tokens_cpu": [1, 1, 1, 1],
+            },
+        )()
+        view = type(
+            "View",
+            (),
+            {
+                "logits_indices": torch.tensor([4, 5, 6, 7], dtype=torch.long),
+                "attn_metadata": type("Common", (), {"num_actual_tokens": 8})(),
+                "spec_decode_common": None,
+            },
+        )()
+
+        port_runtime_hooks.prepare_decode_localization(core=core, runner=runner, out=(None, None), prepare_inputs_view=view)
+
+        self.assertEqual(seen_max_rows, [0])
+        self.assertEqual(runtime.decode_count, 4)
+        self.assertEqual(runtime.decode_request_ids, ["reqA0", "reqA1", "reqB0", "reqB1"])
+        self.assertEqual(runtime.decode_prompt_idxs, [10, 10, 11, 11])
+        self.assertEqual(runtime.decode_sample_idxs, [0, 1, 0, 1])
+        self.assertEqual(tuple(runtime.decode_row_idx.tolist()), (4, 5, 6, 7))
+        self.assertEqual(tuple(runtime.decode_valid_mask[:, 0].tolist()), (1.0, 1.0, 1.0, 1.0))
+
+    def test_prepare_decode_localization_uses_strided_compact_rows_for_regular_prompt_groups(self) -> None:
+        core = type("Core", (), {})()
+        runtime = type("Runtime", (), {})()
+        runtime.decode_row_idx = torch.zeros((6,), dtype=torch.long)
+        runtime.decode_valid_mask = torch.zeros((6, 1), dtype=torch.float32)
+        runtime.decode_prompt_idx_buf = torch.full((6,), -1, dtype=torch.long)
+        runtime.decode_sample_idx_buf = torch.full((6,), -1, dtype=torch.long)
+        runtime.decode_compact_row_idx = torch.full((3,), -1, dtype=torch.long)
+        runtime.decode_count = 0
+        runtime.decode_prompt_idxs = []
+        runtime.decode_sample_idxs = []
+        runtime.decode_request_ids = []
+        runtime.decode_compact_count = 0
+        runtime.decode_compact_row_ids = ()
+        runtime.dispatch_plan = SimpleNamespace()
+        core.RUNTIME = runtime
+        core.pick_common_attn_metadata = staticmethod(lambda attn_metadata, spec_decode_common: attn_metadata)
+        row_idx = torch.tensor([4, 5, 8, 9, 12, 13], dtype=torch.long)
+
+        def _compute_decode_localization(**kwargs):
+            return row_idx, [10, 10, 11, 11, 12, 12], [0, 1, 0, 1, 0, 1], list(range(6))
+
+        core.compute_decode_localization = staticmethod(_compute_decode_localization)
+        core._resolve_prompt_sample_for_req_id = staticmethod(lambda req_id: (0, 0))
+
+        runner = type("Runner", (), {})()
+        runner.input_batch = type(
+            "InputBatch",
+            (),
+            {
+                "req_ids": ["a0", "a1", "b0", "b1", "c0", "c1"],
+                "num_reqs": 6,
+                "req_id_to_index": {"a0": 0, "a1": 1, "b0": 2, "b1": 3, "c0": 4, "c1": 5},
+                "num_prompt_tokens": [1, 1, 1, 1, 1, 1],
+                "num_computed_tokens_cpu": [1, 1, 1, 1, 1, 1],
+            },
+        )()
+        view = type(
+            "View",
+            (),
+            {
+                "logits_indices": torch.tensor([4, 5, 8, 9, 12, 13], dtype=torch.long),
+                "attn_metadata": type("Common", (), {"num_actual_tokens": 16})(),
+                "spec_decode_common": None,
+            },
+        )()
+
+        with mock.patch("torch.as_tensor", wraps=torch.as_tensor) as as_tensor:
+            port_runtime_hooks.prepare_decode_localization(core=core, runner=runner, out=(None, None), prepare_inputs_view=view)
+
+        compact_as_tensor_calls = [
+            call for call in as_tensor.call_args_list if list(call.args[0]) == [0, 2, 4]
+        ]
+        self.assertEqual(compact_as_tensor_calls, [])
+        self.assertEqual(runtime.decode_compact_count, 3)
+        self.assertEqual(runtime.decode_compact_row_ids, (0, 2, 4))
+        self.assertEqual(tuple(runtime.decode_compact_row_idx.tolist()), (4, 8, 12))
+
+    def test_prepare_decode_localization_leaves_inactive_tail_undefined(self) -> None:
+        core = type("Core", (), {})()
+        runtime = type("Runtime", (), {})()
+        runtime.decode_row_idx = torch.full((3,), 99, dtype=torch.long)
+        runtime.decode_valid_mask = torch.full((3, 1), 7.0, dtype=torch.float32)
+        runtime.decode_prompt_idx_buf = torch.full((3,), 77, dtype=torch.long)
+        runtime.decode_sample_idx_buf = torch.full((3,), 88, dtype=torch.long)
+        runtime.decode_count = 0
+        runtime.decode_prompt_idxs = []
+        runtime.decode_sample_idxs = []
+        runtime.decode_request_ids = []
+        runtime.dispatch_plan = None
+        core.RUNTIME = runtime
+        core.pick_common_attn_metadata = staticmethod(lambda attn_metadata, spec_decode_common: attn_metadata)
+        core.compute_decode_localization = staticmethod(
+            lambda **kwargs: (torch.tensor([4], dtype=torch.long), [10], [0], [0])
+        )
+        core._resolve_prompt_sample_for_req_id = staticmethod(lambda req_id: (10, 0))
+        runner = type("Runner", (), {})()
+        runner.input_batch = type(
+            "InputBatch",
+            (),
+            {
+                "req_ids": ["reqA"],
+                "num_reqs": 1,
+                "req_id_to_index": {"reqA": 0},
+                "num_prompt_tokens": [1],
+                "num_computed_tokens_cpu": [1],
+            },
+        )()
+        view = type(
+            "View",
+            (),
+            {
+                "logits_indices": torch.tensor([4], dtype=torch.long),
+                "attn_metadata": type("Common", (), {"num_actual_tokens": 5})(),
+                "spec_decode_common": None,
+            },
+        )()
+
+        port_runtime_hooks.prepare_decode_localization(core=core, runner=runner, out=(None, None), prepare_inputs_view=view)
+
         self.assertEqual(runtime.decode_count, 1)
+        self.assertEqual(tuple(runtime.decode_row_idx.tolist()), (4, 99, 99))
+        self.assertEqual(tuple(runtime.decode_valid_mask[:, 0].tolist()), (1.0, 7.0, 7.0))
+        self.assertEqual(tuple(runtime.decode_prompt_idx_buf.tolist()), (10, 77, 77))
+        self.assertEqual(tuple(runtime.decode_sample_idx_buf.tolist()), (0, 88, 88))
 
     def test_build_step_scope_port_bundle_raises_when_active_flow_entry_is_missing(self) -> None:
         core = self._core()
@@ -518,7 +770,7 @@ class RuntimePortBridgeUnitTest(unittest.TestCase):
                 RequestMeta.read(),
             ),
             writes=(),
-            window="out_of_band_train",
+            window="out_of_band",
             bundle_key=("engine_step_id", "phase"),
         )
 

@@ -25,6 +25,10 @@ class BaseConsumer(ABC):
         """Public flow-based consumption surface."""
         _ = (bundle, ctx)
 
+    def on_step_end(self, ctx: RuntimeContext) -> None:
+        """Optional hook called after the model step is complete."""
+        _ = ctx
+
     def synchronize(self) -> None:
         """Optional flush hook for async/background consumers."""
         return None

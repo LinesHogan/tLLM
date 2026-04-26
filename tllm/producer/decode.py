@@ -16,7 +16,7 @@ from tllm.common.state import (
 
 DECODE_ROW_IDX_BUFFER = "decode_row_idx"
 DECODE_VALID_MASK_BUFFER = "decode_valid_mask"
-DECODE_H1_BUFFER = "decode_h1"
+DECODE_HIDDEN_ROWS_BUFFER = "decode_hidden_rows_buffer"
 
 
 def compute_decode_localization(
@@ -49,8 +49,12 @@ def compute_decode_localization(
     if not decode_positions:
         return torch.empty((0,), device=logits_indices.device, dtype=torch.long), [], [], []
 
-    decode_pos = torch.tensor(decode_positions, device=logits_indices.device, dtype=torch.long)
-    row_idx = logits_indices.index_select(0, decode_pos)
+    contiguous = decode_positions == list(range(int(decode_positions[0]), int(decode_positions[0]) + len(decode_positions)))
+    if contiguous:
+        row_idx = logits_indices.narrow(0, int(decode_positions[0]), len(decode_positions))
+    else:
+        decode_pos = torch.tensor(decode_positions, device=logits_indices.device, dtype=torch.long)
+        row_idx = logits_indices.index_select(0, decode_pos)
 
     # Keep the explicit bounds diagnostic on CPU, but avoid forcing a host
     # sync on CUDA decode hot paths.
@@ -93,9 +97,9 @@ def ensure_decode_buffers(
     decode_valid_mask = torch.zeros((rows, 1), device=device, dtype=hidden_dtype)
     set_or_register_buffer(layer, DECODE_VALID_MASK_BUFFER, decode_valid_mask)
 
-    decode_h1 = torch.empty((rows, hidden_size), device=device, dtype=hidden_dtype)
-    set_or_register_buffer(layer, DECODE_H1_BUFFER, decode_h1)
-    STATE.decode_hidden_rows = getattr(layer, DECODE_H1_BUFFER)
+    decode_hidden_rows_buffer = torch.empty((rows, hidden_size), device=device, dtype=hidden_dtype)
+    set_or_register_buffer(layer, DECODE_HIDDEN_ROWS_BUFFER, decode_hidden_rows_buffer)
+    STATE.decode_hidden_rows = getattr(layer, DECODE_HIDDEN_ROWS_BUFFER)
 
 
 def prepare_decode_localization(runner: Any) -> None:
@@ -163,14 +167,13 @@ def gather_decode_hidden_from_scratch(layer: torch.nn.Module, scratch: torch.Ten
     """Run decode gather from scratch with precomputed row_idx/mask buffers."""
     decode_row_idx = getattr(layer, DECODE_ROW_IDX_BUFFER)
     decode_valid_mask = getattr(layer, DECODE_VALID_MASK_BUFFER)
-    decode_h1 = getattr(layer, DECODE_H1_BUFFER)
+    decode_hidden_rows_buffer = getattr(layer, DECODE_HIDDEN_ROWS_BUFFER)
 
-    # Note: scratch.index_select creates a new tensor, then copy_ writes into decode_h1.
-    # In CUDA Graph, we want a fixed memory index, so write directly into decode_h1.
-    # decode_h1.copy_(scratch.index_select(0, decode_row_idx))
-    torch.index_select(scratch, 0, decode_row_idx, out=decode_h1)
-    decode_h1.mul_(decode_valid_mask)
-    return decode_h1
+    # Note: scratch.index_select creates a new tensor, then copy_ writes into
+    # decode_hidden_rows_buffer. In CUDA Graph, write directly into fixed memory.
+    torch.index_select(scratch, 0, decode_row_idx, out=decode_hidden_rows_buffer)
+    decode_hidden_rows_buffer.mul_(decode_valid_mask)
+    return decode_hidden_rows_buffer
 
 
 def export_decode_capture() -> None:
@@ -178,8 +181,8 @@ def export_decode_capture() -> None:
     if not STATE.capture_active:
         return
 
-    decode_h1 = STATE.decode_hidden_rows
-    if decode_h1 is None:
+    decode_hidden_rows = STATE.decode_hidden_rows
+    if decode_hidden_rows is None:
         return
 
     step = STATE.step
@@ -197,16 +200,16 @@ def export_decode_capture() -> None:
             "Decode export metadata mismatch: "
             f"count={requested} sample_idxs={len(step.decode_sample_idxs)}"
         )
-    if requested > int(decode_h1.shape[0]):
+    if requested > int(decode_hidden_rows.shape[0]):
         raise RuntimeError(
             "Decode export buffer mismatch: "
-            f"count={requested} decode_h1_rows={int(decode_h1.shape[0])}"
+            f"count={requested} decode_hidden_rows={int(decode_hidden_rows.shape[0])}"
         )
 
     if requested <= 0:
         return
 
-    selected = decode_h1[:requested]
+    selected = decode_hidden_rows[:requested]
     # if not bool(torch.isfinite(selected).all().item()):
     #     raise RuntimeError("Found non-finite hidden in localized decode rows")
 

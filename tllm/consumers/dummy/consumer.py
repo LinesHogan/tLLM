@@ -89,7 +89,7 @@ class DummyConsumer(BaseConsumer):
             return
         self._handle_hidden_rows(rows_hidden)
 
-    def apply_feedback(self, ctx: RuntimeContext) -> None:
+    def on_step_end(self, ctx: RuntimeContext) -> None:
         _ = ctx
         self._feedback_calls += 1
         if self.config.enable_async:

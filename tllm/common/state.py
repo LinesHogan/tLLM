@@ -49,7 +49,7 @@ class CaptureTapConsumer(Protocol):
         self,
         *,
         layer: torch.nn.Module,
-        decode_h1: torch.Tensor,
+        decode_hidden_rows: torch.Tensor,
         source_device: torch.device,
     ) -> None:
         ...

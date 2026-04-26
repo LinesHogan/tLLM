@@ -16,7 +16,10 @@ from tllm.runtime.vllm_patch import sampler_patch as _sampler_patch
 class ResidualCaptureRuntimeLike(Protocol):
     decode_row_idx: torch.Tensor | None
     decode_valid_mask: torch.Tensor | None
+    decode_compact_row_idx: torch.Tensor | None
+    decode_compact_count: int
     tap_decode_hidden: dict[str, torch.Tensor]
+    tap_decode_hidden_compact: dict[str, torch.Tensor]
     launch_consumer_from_hooks: bool
     dispatch_plan: object | None
     consumer: object | None
@@ -50,20 +53,39 @@ def install_layer_forward_taps(
             if decode_row_idx is None or decode_valid_mask is None:
                 return out
 
-            decode_buf = core.RUNTIME.tap_decode_hidden[__path]
-            if int(tensor.shape[-1]) != int(decode_buf.shape[1]):
-                raise RuntimeError(
-                    "tap hidden width mismatch: "
-                    f"tensor_hidden={int(tensor.shape[-1])} decode_buf_hidden={int(decode_buf.shape[1])}"
-                )
+            capture_full = bool(getattr(core.RUNTIME, "capture_full_residual_rows", True))
+            if capture_full:
+                decode_buf = core.RUNTIME.tap_decode_hidden[__path]
+                if int(tensor.shape[-1]) != int(decode_buf.shape[1]):
+                    raise RuntimeError(
+                        "tap hidden width mismatch: "
+                        f"tensor_hidden={int(tensor.shape[-1])} decode_buf_hidden={int(decode_buf.shape[1])}"
+                    )
 
-            torch.index_select(tensor, 0, decode_row_idx, out=decode_buf)
-            decode_buf.mul_(decode_valid_mask)
-            _sampler_patch.maybe_capture_source_precompute(
-                runtime=core.RUNTIME,
-                runner=runner,
-                layer_path=__path,
-            )
+                torch.index_select(tensor, 0, decode_row_idx, out=decode_buf)
+            compact_row_idx = getattr(core.RUNTIME, "decode_compact_row_idx", None)
+            compact_buf = getattr(core.RUNTIME, "tap_decode_hidden_compact", {}).get(__path)
+            if isinstance(compact_row_idx, torch.Tensor) and isinstance(compact_buf, torch.Tensor):
+                compact_count = max(0, int(getattr(core.RUNTIME, "decode_compact_count", 0) or 0))
+                if compact_count > 0:
+                    if int(tensor.shape[-1]) != int(compact_buf.shape[1]):
+                        raise RuntimeError(
+                            "compact tap hidden width mismatch: "
+                            f"tensor_hidden={int(tensor.shape[-1])} compact_buf_hidden={int(compact_buf.shape[1])}"
+                        )
+                    if compact_count > int(compact_row_idx.numel()) or compact_count > int(compact_buf.shape[0]):
+                        raise RuntimeError(
+                            "compact tap active row count exceeds compact capture capacity: "
+                            f"active={compact_count} row_idx_capacity={int(compact_row_idx.numel())} "
+                            f"compact_buf_capacity={int(compact_buf.shape[0])}"
+                        )
+                    torch.index_select(tensor, 0, compact_row_idx[:compact_count], out=compact_buf[:compact_count])
+            if capture_full:
+                _sampler_patch.maybe_capture_source_precompute(
+                    runtime=core.RUNTIME,
+                    runner=runner,
+                    layer_path=__path,
+                )
 
             _hidden_bridge.dispatch_layer_lifecycle_events(
                 core=core,
