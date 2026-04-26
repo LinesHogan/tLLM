@@ -60,6 +60,28 @@ class StarterUnitTest(unittest.TestCase):
         self.assertTrue(kwargs["enable_distiller_intervention"])
         self.assertEqual(kwargs["distiller_beta"], 0.25)
 
+    def test_starter_summary_includes_sampler_guidance_counters(self) -> None:
+        starter = self._load_starter()
+        stats = mock.Mock(loss_avg=1.25, loss_count=8)
+        timing = mock.Mock(
+            port_publish_hit_count=7,
+            candidate_sample_count=6,
+            candidate_token_count=123,
+            candidate_max_count=19,
+        )
+
+        summary = starter._format_esamp_summary(
+            stats=stats,
+            timing=timing,
+            answers=16,
+            distiller_enabled=True,
+            distiller_beta=0.9,
+        )
+
+        self.assertIn("distiller_candidate_samples=6", summary)
+        self.assertIn("distiller_candidate_tokens=123", summary)
+        self.assertIn("distiller_port_hits=7", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

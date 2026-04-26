@@ -92,6 +92,28 @@ def _configure_esamp(args: argparse.Namespace):
     )
 
 
+def _format_esamp_summary(
+    *,
+    stats: object,
+    timing: object,
+    answers: int,
+    distiller_enabled: bool,
+    distiller_beta: float,
+) -> str:
+    return (
+        "\nESamp stats: "
+        f"loss_avg={float(getattr(stats, 'loss_avg', 0.0)):.6f} "
+        f"loss_count={int(getattr(stats, 'loss_count', 0))} "
+        f"answers={int(answers)} "
+        f"distiller_enabled={bool(distiller_enabled)} "
+        f"distiller_beta={float(distiller_beta)} "
+        f"distiller_port_hits={int(getattr(timing, 'port_publish_hit_count', 0))} "
+        f"distiller_candidate_samples={int(getattr(timing, 'candidate_sample_count', 0))} "
+        f"distiller_candidate_tokens={int(getattr(timing, 'candidate_token_count', 0))} "
+        f"distiller_candidate_max={int(getattr(timing, 'candidate_max_count', 0))}"
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     consumer = _configure_esamp(args)
@@ -116,6 +138,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         runtime.synchronize_esamp()
         stats = runtime.read_and_reset_esamp_stats(sync=True)
+        timing = runtime.read_and_reset_distiller_timing_stats(sync=True)
 
         for i, out in enumerate(outputs):
             choices = getattr(out, "outputs", None) or []
@@ -124,12 +147,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(text.strip())
 
         print(
-            "\nESamp stats: "
-            f"loss_avg={float(stats.loss_avg):.6f} "
-            f"loss_count={int(stats.loss_count)} "
-            f"answers={len(outputs)} "
-            f"distiller_enabled={bool(args.enable_distiller_intervention)} "
-            f"distiller_beta={float(args.distiller_beta)}"
+            _format_esamp_summary(
+                stats=stats,
+                timing=timing,
+                answers=len(outputs),
+                distiller_enabled=bool(args.enable_distiller_intervention),
+                distiller_beta=float(args.distiller_beta),
+            )
         )
         consumer.synchronize()
     finally:

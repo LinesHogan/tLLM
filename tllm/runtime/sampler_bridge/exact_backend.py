@@ -42,6 +42,10 @@ def _record_candidate_stats(*, candidate_count: int, row_count: int) -> None:
     precompute.candidate_max_count = max(precompute.candidate_max_count, int(candidate_count))
 
 
+def _record_selected_candidate_stats(*, token_ids: torch.Tensor, row_count: int) -> None:
+    _record_candidate_stats(candidate_count=int(token_ids.numel()), row_count=int(row_count))
+
+
 def _select_sampling_tensor_rows(tensor: torch.Tensor | None, row_ids: torch.Tensor) -> torch.Tensor | None:
     if tensor is None:
         return None
@@ -196,6 +200,10 @@ def build_modified_logits_exact(
     if greedy:
         filtered = apply_min_p(apply_top_k_top_p(subset_logits, top_k, top_p), min_p)
         candidate_row_ids, token_ids = select_candidate_pairs(filtered)
+        _record_selected_candidate_stats(
+            token_ids=token_ids,
+            row_count=int(subset_logits.shape[0]),
+        )
         if subset_state.backend == "post_filter_dense_cache" and subset_state.precomputed_dense_logits is not None:
             distiller_candidate_logits = _gather_dense_candidate_logits(
                 state=subset_state,
@@ -227,6 +235,10 @@ def build_modified_logits_exact(
 
     filtered = apply_min_p(apply_top_k_top_p(subset_logits, top_k, top_p), min_p)
     candidate_row_ids, token_ids = select_candidate_pairs(filtered)
+    _record_selected_candidate_stats(
+        token_ids=token_ids,
+        row_count=int(subset_logits.shape[0]),
+    )
     if subset_state.backend == "post_filter_dense_cache" and subset_state.precomputed_dense_logits is not None:
         distiller_candidate_logits = _gather_dense_candidate_logits(
             state=subset_state,

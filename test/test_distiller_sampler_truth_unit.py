@@ -7,11 +7,14 @@ import unittest
 
 import torch
 
+from tllm.runtime import residual_runtime
+from tllm.runtime.sampler_bridge import exact_backend
 from tllm.runtime.sampler_bridge.truth import (
     apply_candidate_intervention,
     project_candidate_logits,
     select_candidate_pairs,
 )
+from tllm.runtime.sampler_bridge.types import CandidateModifierState
 
 
 class DistillerSamplerTruthUnitTest(unittest.TestCase):
@@ -118,6 +121,53 @@ class DistillerSamplerTruthUnitTest(unittest.TestCase):
         )
 
         self.assertTrue(torch.equal(out, logits))
+
+    def test_exact_backend_records_standard_post_filter_candidate_stats(self) -> None:
+        precompute = residual_runtime.RUNTIME.sampler_precompute
+        precompute.candidate_sample_count = 0
+        precompute.candidate_token_count = 0
+        precompute.candidate_row_count = 0
+        precompute.candidate_max_count = 0
+        logits = torch.tensor([[2.0, 1.9, -5.0], [0.1, 3.0, 2.9]], dtype=torch.float32)
+        state = CandidateModifierState(
+            beta=0.5,
+            backend="post_filter_exact",
+            affected_row_ids=torch.tensor([0, 1], dtype=torch.long),
+            pred_hidden=torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32),
+            lm_head_weight=torch.tensor(
+                [
+                    [1.0, 0.0],
+                    [2.0, 0.0],
+                    [0.0, 2.0],
+                ],
+                dtype=torch.float32,
+            ),
+            lm_head_bias=None,
+        )
+        sampling_metadata = type(
+            "_SamplingMetadata",
+            (),
+            {
+                "top_k": None,
+                "top_p": None,
+                "min_p": torch.tensor([0.5, 0.5], dtype=torch.float32),
+                "generators": {},
+            },
+        )()
+
+        exact_backend.build_modified_logits_exact(
+            logits=logits,
+            sampling_metadata=sampling_metadata,
+            state=state,
+            row_ids=torch.tensor([0, 1], dtype=torch.long),
+            greedy=False,
+            all_rows=True,
+        )
+
+        self.assertEqual(precompute.candidate_sample_count, 1)
+        self.assertEqual(precompute.candidate_token_count, 4)
+        self.assertEqual(precompute.candidate_row_count, 2)
+        self.assertEqual(precompute.candidate_max_count, 4)
 
 
 if __name__ == "__main__":
