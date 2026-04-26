@@ -32,12 +32,16 @@ def configure_esamp_runtime(
     model_bank_initializer: SVDModelBankInitializerConfig | None = None,
     model_bank_train_cudagraph: bool = False,
     model_bank_forward_backend: str = "torch",
+    adaptation_pipeline_slots: int = 4,
+    adaptation_stream_mode: str = "dual",
+    adaptation_stream_priority: int = 0,
     trace_per_request_losses: bool = False,
     trace_interval: int = 1,
     trace_max_points: int = 0,
     enable_distiller_intervention: bool = False,
     distiller_beta: float = 0.0,
     distiller_sampler_backend: str = "post_filter_exact",
+    compact_capture_lane: bool = False,
 ) -> ESampConsumer:
     tap_layer_paths = tuple(tap_layer_paths or (source_layer_path, target_layer_path))
     config = ESampConsumerConfig(
@@ -56,12 +60,16 @@ def configure_esamp_runtime(
         model_bank_initializer=model_bank_initializer,
         model_bank_train_cudagraph=bool(model_bank_train_cudagraph),
         model_bank_forward_backend=str(model_bank_forward_backend).strip() or "torch",
+        adaptation_pipeline_slots=max(1, int(adaptation_pipeline_slots)),
+        adaptation_stream_mode=str(adaptation_stream_mode).strip() or "dual",
+        adaptation_stream_priority=int(adaptation_stream_priority),
         trace_per_request_losses=bool(trace_per_request_losses),
         trace_interval=max(1, int(trace_interval)),
         trace_max_points=max(0, int(trace_max_points)),
         enable_distiller_intervention=bool(enable_distiller_intervention),
         distiller_beta=float(distiller_beta),
         distiller_sampler_backend=str(distiller_sampler_backend).strip() or "post_filter_exact",
+        compact_capture_lane=bool(compact_capture_lane),
     )
 
     current = runtime.RUNTIME.consumer
@@ -90,12 +98,16 @@ def configure_esamp_runtime(
         model_bank_initializer=model_bank_initializer,
         model_bank_train_cudagraph=bool(model_bank_train_cudagraph),
         model_bank_forward_backend=str(model_bank_forward_backend).strip() or "torch",
+        adaptation_pipeline_slots=max(1, int(adaptation_pipeline_slots)),
+        adaptation_stream_mode=str(adaptation_stream_mode).strip() or "dual",
+        adaptation_stream_priority=int(adaptation_stream_priority),
         trace_per_request_losses=bool(trace_per_request_losses),
         trace_interval=max(1, int(trace_interval)),
         trace_max_points=max(0, int(trace_max_points)),
         enable_distiller_intervention=bool(enable_distiller_intervention),
         distiller_beta=float(distiller_beta),
         distiller_sampler_backend=str(distiller_sampler_backend).strip() or "post_filter_exact",
+        compact_capture_lane=bool(compact_capture_lane),
     )
     return consumer
 

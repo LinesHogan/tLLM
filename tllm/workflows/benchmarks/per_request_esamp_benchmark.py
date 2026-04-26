@@ -40,6 +40,22 @@ JSON_SUMMARY_PREFIX = "PER_REQUEST_JSON_SUMMARY:"
 _TRACE_DISTILLER_TIMING = os.getenv("TLLM_TRACE_DISTILLER_TIMING", "") == "1"
 
 
+def _path_hotspot_fields(stats: object) -> Dict[str, float]:
+    fields: Dict[str, float] = {}
+    totals = getattr(stats, "cpu_ms_total", {}) or {}
+    counts = getattr(stats, "counts", {}) or {}
+    for raw_name, raw_total in sorted(totals.items()):
+        name = str(raw_name).strip().replace(".", "_")
+        if not name:
+            continue
+        total = float(raw_total)
+        count = float(counts.get(raw_name, 0.0) or 0.0)
+        fields[f"path_hotspot_{name}_ms_total"] = total
+        fields[f"path_hotspot_{name}_count"] = count
+        fields[f"path_hotspot_{name}_ms_avg"] = float(total / count) if count > 0 else 0.0
+    return fields
+
+
 def _maybe_print_distiller_timing(case_name: str, case: Dict[str, float]) -> None:
     if not _TRACE_DISTILLER_TIMING:
         return
@@ -95,6 +111,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model-bank-slots", type=int, default=0)
     parser.add_argument("--model-bank-flush-interval", type=int, default=1)
     parser.add_argument("--model-bank-rank", type=int, default=64)
+    parser.add_argument("--adaptation-pipeline-slots", type=int, default=4)
+    parser.add_argument("--adaptation-stream-mode", type=str, default="dual", choices=["dual", "single", "serial"])
+    parser.add_argument("--adaptation-stream-priority", type=int, default=0)
     parser.add_argument("--model-bank-use-output-layernorm", action="store_true")
     parser.add_argument("--no-model-bank-use-output-layernorm", dest="model_bank_use_output_layernorm", action="store_false")
     parser.add_argument("--model-bank-initializer", type=str, default="none", choices=["none", "svd"])
@@ -108,6 +127,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model-bank-initializer-svd-min-rows", type=int, default=32)
     parser.add_argument("--model-bank-initializer-svd-max-wait-steps", type=int, default=4)
     parser.add_argument("--model-bank-train-cudagraph", action="store_true")
+    parser.add_argument("--model-bank-compact-capture", action="store_true")
+    parser.add_argument(
+        "--no-model-bank-compact-capture",
+        dest="model_bank_compact_capture",
+        action="store_false",
+    )
     parser.add_argument(
         "--model-bank-forward-backend",
         type=str,
@@ -180,6 +205,7 @@ def _parse_args() -> argparse.Namespace:
     parser.set_defaults(run_model_bank_case=True)
     parser.set_defaults(model_bank_use_output_layernorm=True)
     parser.set_defaults(model_bank_train_cudagraph=True)
+    parser.set_defaults(model_bank_compact_capture=False)
     return parser.parse_args()
 
 
@@ -235,7 +261,12 @@ def _resolve_model_bank_slots(
     slots = int(requested_slots)
     if slots > 0:
         return slots
-    return max(1, int(prompt_count), int(effective_batch_cap))
+    _ = effective_batch_cap
+    return max(1, int(prompt_count))
+
+
+def _adaptation_pipeline_slots(args: argparse.Namespace) -> int:
+    return max(1, int(getattr(args, "adaptation_pipeline_slots", 4)))
 
 
 def _requires_isolated_llm_cases(*, enable_distiller_intervention: bool, distiller_beta: float = 0.0) -> bool:
@@ -287,6 +318,12 @@ def _build_isolated_case_subprocess_cmd(
         str(args.model_bank_flush_interval),
         "--model-bank-rank",
         str(args.model_bank_rank),
+        "--adaptation-pipeline-slots",
+        str(_adaptation_pipeline_slots(args)),
+        "--adaptation-stream-mode",
+        str(getattr(args, "adaptation_stream_mode", "dual")),
+        "--adaptation-stream-priority",
+        str(getattr(args, "adaptation_stream_priority", 0)),
         "--model-bank-forward-backend",
         str(getattr(args, "model_bank_forward_backend", "torch")),
         "--model-bank-initializer",
@@ -357,6 +394,12 @@ def _build_isolated_case_subprocess_cmd(
         "--model-bank-train-cudagraph",
         "--no-model-bank-train-cudagraph",
     )
+    _append_bool_flag(
+        cmd,
+        bool(getattr(args, "model_bank_compact_capture", True)),
+        "--model-bank-compact-capture",
+        "--no-model-bank-compact-capture",
+    )
     if bool(args.benchmark_ignore_eos):
         cmd.append("--benchmark-ignore-eos")
     if bool(args.benchmark_disable_prefix_caching):
@@ -419,6 +462,10 @@ def _run_case(
     model_bank_initializer: SVDModelBankInitializerConfig | None,
     model_bank_train_cudagraph: bool,
     model_bank_forward_backend: str,
+    adaptation_pipeline_slots: int,
+    adaptation_stream_mode: str,
+    adaptation_stream_priority: int,
+    compact_capture_lane: bool,
     train_enabled: bool,
     prompts: Sequence[str],
     params: Sequence[SamplingParams],
@@ -448,6 +495,10 @@ def _run_case(
         model_bank_initializer=model_bank_initializer,
         model_bank_train_cudagraph=bool(model_bank_train_cudagraph),
         model_bank_forward_backend=str(model_bank_forward_backend),
+        adaptation_pipeline_slots=max(1, int(adaptation_pipeline_slots)),
+        adaptation_stream_mode=str(adaptation_stream_mode),
+        adaptation_stream_priority=int(adaptation_stream_priority),
+        compact_capture_lane=bool(compact_capture_lane),
     )
     core.set_esamp_training_enabled(bool(train_enabled))
     core.synchronize_esamp()
@@ -480,6 +531,7 @@ def _run_case(
 
     for _ in range(int(warmup_rounds)):
         _run_generate_chunked()
+    _ = core.read_and_reset_path_hotspot_stats(sync=False)
 
     torch.cuda.synchronize()
     start = time.perf_counter()
@@ -497,6 +549,7 @@ def _run_case(
     elapsed = time.perf_counter() - start
     stats = core.read_and_reset_esamp_stats(sync=True)
     distiller_timing = core.read_and_reset_distiller_timing_stats(sync=True)
+    path_hotspots = core.read_and_reset_path_hotspot_stats(sync=False)
     model_bank_graph = core.read_graph_debug_stats(mode="model_bank")
 
     req_per_s = float(total_requests / elapsed) if elapsed > 0 else 0.0
@@ -513,7 +566,7 @@ def _run_case(
         else 0.0
     )
 
-    return {
+    result = {
         "elapsed_s": float(elapsed),
         "requests": float(total_requests),
         "completions": float(total_completions),
@@ -556,6 +609,8 @@ def _run_case(
         "model_bank_graph_replay_stage_miss_count": float(model_bank_graph.replay_stage_miss_count),
         "model_bank_graph_kernel_fallback_count": float(model_bank_graph.kernel_fallback_count),
     }
+    result.update(_path_hotspot_fields(path_hotspots))
+    return result
 
 
 def _configure_case_runtime(
@@ -577,6 +632,10 @@ def _configure_case_runtime(
     model_bank_initializer: SVDModelBankInitializerConfig | None,
     model_bank_train_cudagraph: bool,
     model_bank_forward_backend: str,
+    adaptation_pipeline_slots: int,
+    adaptation_stream_mode: str,
+    adaptation_stream_priority: int,
+    compact_capture_lane: bool,
     train_enabled: bool,
 ) -> None:
     esamp_workflow_support.configure_esamp_runtime(
@@ -599,6 +658,10 @@ def _configure_case_runtime(
         model_bank_initializer=model_bank_initializer,
         model_bank_train_cudagraph=bool(model_bank_train_cudagraph),
         model_bank_forward_backend=str(model_bank_forward_backend),
+        adaptation_pipeline_slots=max(1, int(adaptation_pipeline_slots)),
+        adaptation_stream_mode=str(adaptation_stream_mode),
+        adaptation_stream_priority=int(adaptation_stream_priority),
+        compact_capture_lane=bool(compact_capture_lane),
     )
 
 
@@ -630,6 +693,9 @@ def _run_per_request_trajectory(
         model_bank_initializer=_build_model_bank_initializer_config(args),
         model_bank_train_cudagraph=bool(args.model_bank_train_cudagraph),
         model_bank_forward_backend=str(getattr(args, "model_bank_forward_backend", "torch")),
+        adaptation_pipeline_slots=_adaptation_pipeline_slots(args),
+        adaptation_stream_mode=str(getattr(args, "adaptation_stream_mode", "dual")),
+        adaptation_stream_priority=int(getattr(args, "adaptation_stream_priority", 0)),
         trace_per_request_losses=True,
         trace_interval=max(1, int(args.trajectory_step_interval)),
         trace_max_points=max(0, int(args.trajectory_max_points)),
@@ -782,6 +848,9 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
         model_bank_initializer=_build_model_bank_initializer_config(args),
         model_bank_train_cudagraph=bool(args.model_bank_train_cudagraph),
         model_bank_forward_backend=normalize_model_bank_forward_backend(getattr(args, "model_bank_forward_backend", "torch")),
+        adaptation_pipeline_slots=_adaptation_pipeline_slots(args),
+        adaptation_stream_mode=str(getattr(args, "adaptation_stream_mode", "dual")),
+        adaptation_stream_priority=int(getattr(args, "adaptation_stream_priority", 0)),
         prompts=effective_prompts,
         params=params,
         request_prompt_indices=request_prompt_indices,
@@ -797,6 +866,12 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
             selected_case_names.append("model_bank_on")
     else:
         selected_case_names = [requested_case_filter]
+    model_bank_case_selected = "model_bank_on" in selected_case_names
+    common["compact_capture_lane"] = bool(
+        getattr(args, "model_bank_compact_capture", True)
+        and model_bank_case_selected
+        and (not bool(args.enable_distiller_intervention))
+    )
 
     def _make_case_llm():
         return core.make_llm(
@@ -854,6 +929,10 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
             model_bank_initializer=_build_model_bank_initializer_config(args),
             model_bank_train_cudagraph=bool(args.model_bank_train_cudagraph),
             model_bank_forward_backend=str(getattr(args, "model_bank_forward_backend", "torch")),
+            adaptation_pipeline_slots=_adaptation_pipeline_slots(args),
+            adaptation_stream_mode=str(getattr(args, "adaptation_stream_mode", "dual")),
+            adaptation_stream_priority=int(getattr(args, "adaptation_stream_priority", 0)),
+            compact_capture_lane=bool(common["compact_capture_lane"]),
         )
         llm = _make_case_llm()
     else:
@@ -896,6 +975,10 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
                 model_bank_initializer=common["model_bank_initializer"],
                 model_bank_train_cudagraph=common["model_bank_train_cudagraph"],
                 model_bank_forward_backend=common["model_bank_forward_backend"],
+                adaptation_pipeline_slots=common["adaptation_pipeline_slots"],
+                adaptation_stream_mode=common["adaptation_stream_mode"],
+                adaptation_stream_priority=common["adaptation_stream_priority"],
+                compact_capture_lane=common["compact_capture_lane"],
                 train_enabled=train_enabled,
             )
             case_llm = _make_case_llm()
@@ -1041,6 +1124,10 @@ def _run_one_implementation(args: argparse.Namespace, implementation: str) -> Di
                 model_bank_initializer=common["model_bank_initializer"],
                 model_bank_train_cudagraph=common["model_bank_train_cudagraph"],
                 model_bank_forward_backend=common["model_bank_forward_backend"],
+                adaptation_pipeline_slots=common["adaptation_pipeline_slots"],
+                adaptation_stream_mode=common["adaptation_stream_mode"],
+                adaptation_stream_priority=common["adaptation_stream_priority"],
+                compact_capture_lane=common["compact_capture_lane"],
                 train_enabled=True,
             )
             trajectory_llm = _make_case_llm()

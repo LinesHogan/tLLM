@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Profile side-train modes and write a markdown report with evidence."""
+"""Profile ESamp adaptation modes and write a markdown report with evidence."""
 
 from __future__ import annotations
 
@@ -84,6 +84,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--model-bank-slots", type=int, default=0)
     p.add_argument("--model-bank-flush-interval", type=int, default=1)
     p.add_argument("--model-bank-rank", type=int, default=64)
+    p.add_argument("--adaptation-pipeline-slots", type=int, default=4)
+    p.add_argument("--adaptation-stream-mode", type=str, default="dual", choices=["dual", "single", "serial"])
+    p.add_argument("--adaptation-stream-priority", type=int, default=0)
     p.add_argument("--model-bank-use-output-layernorm", action="store_true")
     p.add_argument("--no-model-bank-use-output-layernorm", dest="model_bank_use_output_layernorm", action="store_false")
     p.add_argument("--model-bank-initializer", type=str, default="none", choices=["none", "svd"])
@@ -232,6 +235,9 @@ def _profile_one_mode(
         model_bank_use_output_layernorm=bool(args.model_bank_use_output_layernorm),
         model_bank_initializer=_build_model_bank_initializer_config(args),
         model_bank_train_cudagraph=bool(args.model_bank_train_cudagraph),
+        adaptation_pipeline_slots=max(1, int(args.adaptation_pipeline_slots)),
+        adaptation_stream_mode=str(args.adaptation_stream_mode),
+        adaptation_stream_priority=int(args.adaptation_stream_priority),
     )
     core.set_esamp_training_enabled(bool(mode.train_enabled))
     core.synchronize_esamp()
